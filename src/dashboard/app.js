@@ -110,7 +110,7 @@ function App() {
 
   const avgConfidence = beliefs.length > 0
     ? (beliefs.reduce((s, b) => s + b.confidence, 0) / beliefs.length).toFixed(2)
-    : '—';
+    : '-';
 
   const typeCounts = beliefs.reduce((acc, b) => {
     acc[b.type] = (acc[b.type] || 0) + 1;
@@ -131,7 +131,7 @@ function App() {
         value: selectedSession,
         onChange: e => setSelectedSession(e.target.value),
       },
-        React.createElement('option', { value: '' }, '— Select Session —'),
+        React.createElement('option', { value: '' }, '- Select Session -'),
         ...sessions.map(s => React.createElement('option', { key: s, value: s }, s))
       )
     ),
@@ -199,7 +199,7 @@ function App() {
     React.createElement('div', { className: 'footer' },
       React.createElement('div', { className: 'footer-wordmark' },
         React.createElement('a', { href: 'https://github.com/mosesman831', target: '_blank' }, 'LatticeAG'),
-        ' — Agents, together.'
+        ' - Agents, together.'
       )
     )
   );

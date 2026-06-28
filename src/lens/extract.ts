@@ -1,5 +1,5 @@
 /**
- * Axion Lens — Belief extraction engine.
+ * Axion Lens - Belief extraction engine.
  *
  * Rule-based extractor: walks the ordered `BELIEF_PATTERNS` list against a
  * model response, deduplicates overlapping matches (first pattern wins per

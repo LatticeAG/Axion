@@ -1,5 +1,5 @@
 /**
- * Axion Lens — Belief extraction patterns
+ * Axion Lens - Belief extraction patterns
  *
  * Each pattern is a { pattern, type, confidence, group, evidenceGroup?, actionGroup? }
  * object. The engine walks `BELIEF_PATTERNS` in order; the first pattern that
@@ -17,7 +17,7 @@
 import type { BeliefType } from './types.js';
 
 export interface BeliefPattern {
-  /** Case-insensitive regex (use `i` and `m` flags; no `g` — engine adds it). */
+  /** Case-insensitive regex (use `i` and `m` flags; no `g` - engine adds it). */
   pattern: RegExp;
   type: BeliefType;
   /** Baseline confidence for matches of this pattern (0–1). */
@@ -62,7 +62,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
     group: 1,
     confidence: 0.8,
   },
-  // "from the X, ..."  (only when followed by a verb phrase — avoids "from the start")
+  // "from the X, ..."  (only when followed by a verb phrase - avoids "from the start")
   {
     label: 'from-the',
     type: 'evidence',
@@ -88,7 +88,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
     group: 2,
     confidence: 0.85,
   },
-  // "since X" — but NOT temporal "since [year]"; require a verb-ish word after.
+  // "since X" - but NOT temporal "since [year]"; require a verb-ish word after.
   {
     label: 'since-causal',
     type: 'causal',
@@ -122,7 +122,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
     group: 1,
     confidence: 0.65,
   },
-  // "if X then Y" — captures X as assumption (group 1), Y as action (group 2)
+  // "if X then Y" - captures X as assumption (group 1), Y as action (group 2)
   {
     label: 'if-then',
     type: 'assumption',

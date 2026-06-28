@@ -1,4 +1,4 @@
-# Axion — Technical Specification
+# Axion - Technical Specification
 
 > Deep-dive into the architecture, data flow, and implementation details.
 > For a high-level overview, see [README.md](./README.md). For the full build plan, see [SPEC.md](./SPEC.md).
@@ -35,7 +35,7 @@
                     └─────────────────────────────────────────────┘
 ```
 
-### Request Flow (Phase 1 — Axion Lens)
+### Request Flow (Phase 1 - Axion Lens)
 
 ```
 1. Agent sends POST /v1/chat/completions with messages[]
@@ -60,20 +60,20 @@
 | Full response accumulation | Stream duration | No (parallel with streaming) |
 | Belief extraction | <1ms | No (waitUntil) |
 | Belief storage in DO | <5ms | No (waitUntil) |
-| **Added latency to agent** | **<1ms** | — |
+| **Added latency to agent** | **<1ms** | - |
 
 ---
 
 ## Module Deep-Dive
 
-### src/proxy/stream.ts — SSE Streaming Proxy
+### src/proxy/stream.ts - SSE Streaming Proxy
 
 The core of Axion Lens. Handles both streaming (`stream: true`) and non-streaming responses.
 
 **Streaming flow:**
 1. Forward the request to the upstream API
 2. Create a `TransformStream` that tees the response body
-3. One readable stream goes to the caller (the agent) — immediate, zero buffering
+3. One readable stream goes to the caller (the agent) - immediate, zero buffering
 4. The other stream accumulates chunks into a buffer string
 5. When the readable stream to the caller ends, `waitUntil()` fires
 6. The accumulated buffer is passed to `extractBeliefs()`
@@ -86,7 +86,7 @@ The core of Axion Lens. Handles both streaming (`stream: true`) and non-streamin
 
 **Key invariant:** The agent never waits for belief extraction. The response is forwarded immediately regardless of streaming mode.
 
-### src/lens/patterns.ts — Belief Extraction Patterns
+### src/lens/patterns.ts - Belief Extraction Patterns
 
 Patterns are defined as an extensible array:
 
@@ -109,7 +109,7 @@ Each pattern matches a linguistic construct and extracts the relevant text. The 
 
 Final confidence is clamped to [0.1, 1.0].
 
-### src/lens/extract.ts — Extraction Pipeline
+### src/lens/extract.ts - Extraction Pipeline
 
 ```
 Input: responseText (string), sessionId (string)
@@ -127,7 +127,7 @@ Input: responseText (string), sessionId (string)
 Output: ExtractedBelief[]
 ```
 
-### src/state/SessionDurableObject.ts — Belief DAG
+### src/state/SessionDurableObject.ts - Belief DAG
 
 Each agent session gets one Durable Object instance. The DO holds beliefs in memory as a `Map<string, BeliefNode>`.
 
@@ -145,7 +145,7 @@ interface BeliefNode {
 }
 ```
 
-**DAG construction:** When `addBelief(belief)` is called, if `parentId` is provided, the new node is linked as a child of the parent. This creates a tree structure within the session — each belief is connected to the one that preceded it, enabling root-cause backtracking.
+**DAG construction:** When `addBelief(belief)` is called, if `parentId` is provided, the new node is linked as a child of the parent. This creates a tree structure within the session - each belief is connected to the one that preceded it, enabling root-cause backtracking.
 
 **DO fetch handler:**
 - `GET /` → returns full belief graph as `{ nodes: BeliefNode[], edges: [{parent, child}] }`
@@ -208,7 +208,7 @@ interface BeliefPattern {
 
 ### Memory Limits
 
-Durable Objects have a 128MB memory limit. A single belief node is ~500 bytes. That's ~256K beliefs per session — far beyond what any reasonable agent session produces (typical: 50–500 beliefs).
+Durable Objects have a 128MB memory limit. A single belief node is ~500 bytes. That's ~256K beliefs per session - far beyond what any reasonable agent session produces (typical: 50–500 beliefs).
 
 If sessions grow beyond this, the DO can flush old beliefs to Durable Storage (persistent disk) and lazy-load on access. Not needed for Phase 1.
 
@@ -220,9 +220,9 @@ The dashboard is a single-page React app served as static assets from the Worker
 
 ### Design Constraints
 
-- **No build step** — React is loaded from CDN via `<script>` tags. This means no JSX. All components use `React.createElement()`.
-- **No bundler** — `app.js` is plain JavaScript, served directly.
-- **No CSS framework** — hand-written CSS in `styles.css`.
+- **No build step** - React is loaded from CDN via `<script>` tags. This means no JSX. All components use `React.createElement()`.
+- **No bundler** - `app.js` is plain JavaScript, served directly.
+- **No CSS framework** - hand-written CSS in `styles.css`.
 
 ### Component Tree
 
@@ -282,8 +282,8 @@ binding = "ASSETS"
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `UPSTREAM_API_URL` | Yes | — | Base URL of the upstream model API |
-| `UPSTREAM_API_KEY` | No | — | API key forwarded to upstream (if not set, agent's own key is passed through) |
+| `UPSTREAM_API_URL` | Yes | - | Base URL of the upstream model API |
+| `UPSTREAM_API_KEY` | No | - | API key forwarded to upstream (if not set, agent's own key is passed through) |
 
 ---
 
@@ -305,7 +305,7 @@ The belief extraction patterns are designed to be extensible. To add a new patte
 
 3. If adding a new belief type, update `BeliefType` in `types.ts` and add the color mapping in `styles.css`.
 
-The extraction engine automatically picks up new patterns — no changes to `extract.ts` needed.
+The extraction engine automatically picks up new patterns - no changes to `extract.ts` needed.
 
 ---
 
@@ -372,12 +372,12 @@ If any check fails, the action is blocked and a correction is injected into the 
 
 | Feature | Open-Source (self-hosted) | SaaS (hosted) |
 |---|---|---|
-| Proxy + belief extraction | Yes | — |
-| Local dashboard (single session) | Yes | — |
-| Hosted multi-session dashboard | — | Yes |
-| Cross-session belief analysis | — | Yes |
-| Team sharing + alerting | — | Yes |
-| Community belief pattern library | — | Yes |
+| Proxy + belief extraction | Yes | - |
+| Local dashboard (single session) | Yes | - |
+| Hosted multi-session dashboard | - | Yes |
+| Cross-session belief analysis | - | Yes |
+| Team sharing + alerting | - | Yes |
+| Community belief pattern library | - | Yes |
 
 The open-source core is fully functional standalone. The SaaS layer adds convenience, collaboration, and community features.
 
@@ -388,4 +388,4 @@ The open-source core is fully functional standalone. The SaaS layer adds conveni
 - **Author:** Moses / LatticeAG
 - **GitHub:** [mosesman831](https://github.com/mosesman831)
 - **License:** MIT
-- **Brand:** LatticeAG — *"Agents, together."*
+- **Brand:** LatticeAG - *"Agents, together."*

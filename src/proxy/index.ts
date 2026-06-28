@@ -1,5 +1,5 @@
 /**
- * Axion Lens — Cloudflare Worker entry point.
+ * Axion Lens - Cloudflare Worker entry point.
  *
  * Sits between an AI agent and the model API. Streams responses through with
  * zero added latency and triggers belief extraction in the background via
@@ -35,12 +35,12 @@ export default {
 
     // --- Routing -----------------------------------------------------------
 
-    // Belief graph API — read from the Durable Object for a session.
+    // Belief graph API - read from the Durable Object for a session.
     if (pathname.startsWith("/api/beliefs/") && request.method === "GET") {
       return fetchBeliefs(request, env, pathname);
     }
 
-    // Dashboard — served via the ASSETS static binding.
+    // Dashboard - served via the ASSETS static binding.
     if (
       pathname === "/dashboard" ||
       pathname === "/dashboard/" ||
@@ -49,7 +49,7 @@ export default {
       return handleDashboard(request, env);
     }
 
-    // Chat completions proxy — the main event.
+    // Chat completions proxy - the main event.
     if (pathname === "/v1/chat/completions" && request.method === "POST") {
       return proxyChatCompletion(request, env, ctx);
     }

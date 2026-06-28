@@ -1,5 +1,5 @@
 /**
- * Axion Lens — public entrypoint.
+ * Axion Lens - public entrypoint.
  *
  * Re-exports the extraction engine and its types so consumers can do:
  *   import { extractBeliefs, type ExtractedBelief } from 'axion/lens';

@@ -1,5 +1,5 @@
 /**
- * Axion Lens — SSE stream utilities.
+ * Axion Lens - SSE stream utilities.
  *
  * Helpers for parsing Server-Sent Events out of a ReadableStream and for tee'ing
  * a response body so one branch flows straight to the caller (zero added latency)
@@ -18,7 +18,7 @@ import type { StreamChunk } from "./types";
 export function parseSseData(payload: string): StreamChunk {
   const trimmed = payload.trim();
 
-  // Terminal sentinel — OpenAI streams end with `data: [DONE]`.
+  // Terminal sentinel - OpenAI streams end with `data: [DONE]`.
   if (trimmed === "[DONE]") {
     return { raw: payload, text: "", done: true };
   }
@@ -26,7 +26,7 @@ export function parseSseData(payload: string): StreamChunk {
   let text = "";
   try {
     const json = JSON.parse(trimmed);
-    // chat.completions.chunk — concatenate any delta.content fragments.
+    // chat.completions.chunk - concatenate any delta.content fragments.
     const deltas = json?.choices?.[0]?.delta?.content;
     if (typeof deltas === "string" && deltas.length > 0) {
       text = deltas;
@@ -38,7 +38,7 @@ export function parseSseData(payload: string): StreamChunk {
       }
     }
   } catch {
-    // Not JSON or not the shape we expect — pass through untouched.
+    // Not JSON or not the shape we expect - pass through untouched.
   }
 
   return { raw: payload, text, done: false };
@@ -156,7 +156,7 @@ export function teeResponseForExtraction(
         }
       }
     } catch {
-      // Best-effort accumulation — never fail the proxy over extraction.
+      // Best-effort accumulation - never fail the proxy over extraction.
     } finally {
       try {
         reader.releaseLock();

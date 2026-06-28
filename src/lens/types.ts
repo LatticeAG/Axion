@@ -1,5 +1,5 @@
 /**
- * Axion Lens — Type definitions
+ * Axion Lens - Type definitions
  *
  * All TypeScript interfaces for the belief extraction engine.
  *
@@ -65,7 +65,7 @@ export interface BeliefNode extends ExtractedBelief {
 export interface BeliefEdge {
   fromId: string;
   toId: string;
-  /** Why the edge exists — "derived", "contradicts", "supports". */
+  /** Why the edge exists - "derived", "contradicts", "supports". */
   relation: 'derived' | 'contradicts' | 'supports';
 }
 
