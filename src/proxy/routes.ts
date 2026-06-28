@@ -9,7 +9,7 @@ import type { Env } from "./types";
  * binding in wrangler.toml. We rewrite `/dashboard` → `/index.html` so the
  * React SPA loads. Sub-paths under /dashboard/ are served as static assets.
  */
-export function handleDashboard(request: Request, env: Env): Response {
+export async function handleDashboard(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
 
   // Root dashboard path → serve index.html from the assets binding.

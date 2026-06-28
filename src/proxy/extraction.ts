@@ -45,15 +45,13 @@ export async function runExtraction(
 
   // Persist to the Durable Object for this session.
   try {
-    const stub = env.SESSION.idFromName(sessionId);
-    const doResponse = await stub.fetch(
-      `https://internal/store-beliefs`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(result),
-      }
-    );
+    const id = env.SESSION.idFromName(sessionId);
+    const stub = env.SESSION.get(id);
+    const doResponse = await stub.fetch(`https://internal/store-beliefs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(result),
+    });
     if (!doResponse.ok) {
       console.error(
         "axion: failed to store beliefs in DO",

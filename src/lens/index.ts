@@ -5,10 +5,11 @@
  *   import { extractBeliefs, type ExtractedBelief } from 'axion/lens';
  */
 
-export { extractBeliefs, DEFAULT_CONFIDENCE } from './extract.js';
+export { extractBeliefs } from './extract.js';
 export {
   BELIEF_PATTERNS,
   CONFIDENCE_MARKERS,
+  DEFAULT_CONFIDENCE,
   MARKER_SCAN_RADIUS,
   type BeliefPattern,
   type ConfidenceMarkerPattern,
