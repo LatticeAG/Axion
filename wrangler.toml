@@ -1,0 +1,23 @@
+name = "axion"
+main = "src/proxy/index.ts"
+compatibility_date = "2024-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Durable Object binding for per-session belief graph state.
+[[durable_objects.bindings]]
+name = "SESSION"
+class_name = "SessionDurableObject"
+
+# Migration for the Session Durable Object.
+[[migrations]]
+tag = "v1"
+new_classes = ["SessionDurableObject"]
+
+# Static assets for the dashboard (served by the Worker via the ASSETS binding).
+[assets]
+directory = "./src/dashboard"
+binding = "ASSETS"
+
+# Environment variables (set real values with `wrangler secret put`).
+[vars]
+UPSTREAM_API_URL = "https://api.openai.com"
