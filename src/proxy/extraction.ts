@@ -1,5 +1,5 @@
 /**
- * Axion Lens — Belief extraction trigger.
+ * Axion Lens - Belief extraction trigger.
  *
  * Glue between the proxy and the lens module. We import extractBeliefs from the
  * lens (built by another agent) and forward the result to the Durable Object

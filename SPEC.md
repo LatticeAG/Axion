@@ -1,13 +1,13 @@
 # Axion
 
-> Agent cognitive middleware — a proxy layer that inspects, detects, and verifies agent reasoning.
+> Agent cognitive middleware - a proxy layer that inspects, detects, and verifies agent reasoning.
 > Open-source core. Hosted SaaS dashboard later.
 
 ---
 
 ## What It Is
 
-Axion is a proxy that sits between an AI agent and the outside world. It intercepts model responses, agent outputs, and tool calls — then inspects, detects, and verifies agent reasoning in real time.
+Axion is a proxy that sits between an AI agent and the outside world. It intercepts model responses, agent outputs, and tool calls - then inspects, detects, and verifies agent reasoning in real time.
 
 Any agent that supports `base_url` override works. Zero code changes.
 
@@ -24,13 +24,13 @@ Agents make decisions developers can't understand, get stuck in loops they can't
 
 ## The Three Layers
 
-### Layer 1 — Axion Lens (belief inspection)
+### Layer 1 - Axion Lens (belief inspection)
 **Observe. Read-only. Cannot break anything.**
 
 Intercepts model responses and extracts the agent's beliefs, assumptions, and reasoning chain. Builds a belief DAG across the session. When something goes wrong, you trace back to the exact belief that caused the wrong action.
 
 - Extracts `{belief, evidence, confidence, action_taken}` from each model response
-- Rule-based parsing (regex + NLP), not model-based — fast and cheap
+- Rule-based parsing (regex + NLP), not model-based - fast and cheap
 - Builds a belief graph: beliefs → decisions → outcomes
 - Backtracks from failures to root-cause beliefs
 - Serves a timeline dashboard: every decision point, beliefs behind it, confidence, correct/wrong
@@ -38,10 +38,10 @@ Intercepts model responses and extracts the agent's beliefs, assumptions, and re
 
 **This is the MVP. Ships first.**
 
-### Layer 2 — Axion Loop (revision loop breaker)
+### Layer 2 - Axion Loop (revision loop breaker)
 **Detect + intervene. Uses belief graph from Layer 1.**
 
-Detects when an agent is stuck in a revision loop and intervenes with targeted feedback — not a crude kill signal.
+Detects when an agent is stuck in a revision loop and intervenes with targeted feedback - not a crude kill signal.
 
 - Embeds each agent output, maintains sliding window of last 10-20 outputs
 - If cosine similarity exceeds threshold (0.85), flags potential loop
@@ -49,10 +49,10 @@ Detects when an agent is stuck in a revision loop and intervenes with targeted f
 - Injects targeted feedback: "You've tried [X] 3 times with the same result. Consider: [alternatives not yet tried]."
 - Escalation ladder: soft nudge → hard nudge (force re-read task) → escalate to human
 
-### Layer 3 — Axion Gate (runtime self-verification)
+### Layer 3 - Axion Gate (runtime self-verification)
 **Block + correct. Uses belief graph + plan from Layer 1.**
 
-Verification gate that checks agent actions **before** they execute. Not post-hoc evals — real-time blocking with corrections fed back to the agent.
+Verification gate that checks agent actions **before** they execute. Not post-hoc evals - real-time blocking with corrections fed back to the agent.
 
 - Intercepts tool calls (file writes, shell, API) before execution
 - Three checks per call:
@@ -84,9 +84,9 @@ State: Durable Object per session (belief DAG in memory)
 
 | Phase | What | Status |
 |---|---|---|
-| 1 | Axion Lens — proxy + belief extraction + local dashboard | **Next** |
-| 2 | Axion Loop — embedding detection + intervention injection | Future |
-| 3 | Axion Gate — tool call interception + verification + blocking | Future |
+| 1 | Axion Lens - proxy + belief extraction + local dashboard | **Next** |
+| 2 | Axion Loop - embedding detection + intervention injection | Future |
+| 3 | Axion Gate - tool call interception + verification + blocking | Future |
 
 ## Open-Source Scope (Phase 1)
 
@@ -120,8 +120,8 @@ export ANTHROPIC_BASE_URL=https://your-axion-worker.dev
 # Codex / OpenAI agents
 export OPENAI_BASE_URL=https://your-axion-worker.dev
 
-# Cursor — set custom API base URL in settings
-# Hermes — set provider base_url in config.yaml
+# Cursor - set custom API base URL in settings
+# Hermes - set provider base_url in config.yaml
 ```
 
 Agent works normally. Axion observes in the background. Dashboard at `https://your-axion-worker.dev/dashboard`.
@@ -130,9 +130,9 @@ Agent works normally. Axion observes in the background. Dashboard at `https://yo
 
 ## Brand
 
-**Axion** — a particle theorized to exist but never directly observed. Agent beliefs are the same: invisible, but they shape every decision. Axion makes them visible.
+**Axion** - a particle theorized to exist but never directly observed. Agent beliefs are the same: invisible, but they shape every decision. Axion makes them visible.
 
-**LatticeAG** — *"Agents, together."*
+**LatticeAG** - *"Agents, together."*
 
 ```
 axion/

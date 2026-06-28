@@ -1,5 +1,5 @@
 /**
- * STUB — Axion Lens session Durable Object.
+ * STUB - Axion Lens session Durable Object.
  *
  * This file is a placeholder so the proxy module typechecks before the real
  * Durable Object (src/state/SessionDurableObject.ts, built by another agent)
@@ -31,7 +31,7 @@ export class SessionDurableObject implements DurableObject {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    // POST /store-beliefs — persist extracted beliefs for this session.
+    // POST /store-beliefs - persist extracted beliefs for this session.
     if (url.pathname === "/store-beliefs" && request.method === "POST") {
       const result = (await request.json()) as ExtractionResult;
       const stored: StoredBeliefs[] = (await this.state.storage.get("beliefs")) || [];
@@ -46,7 +46,7 @@ export class SessionDurableObject implements DurableObject {
       });
     }
 
-    // GET /beliefs — return the full belief graph for this session.
+    // GET /beliefs - return the full belief graph for this session.
     if (url.pathname === "/beliefs" && request.method === "GET") {
       const stored: StoredBeliefs[] = (await this.state.storage.get("beliefs")) || [];
       return new Response(JSON.stringify({ sessionId: this.state.id.toString(), beliefs: stored }), {

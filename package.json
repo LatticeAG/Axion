@@ -1,7 +1,7 @@
 {
   "name": "axion",
   "version": "0.1.0",
-  "description": "Agent cognitive middleware — a proxy layer that inspects, detects, and verifies agent reasoning.",
+  "description": "Agent cognitive middleware - a proxy layer that inspects, detects, and verifies agent reasoning.",
   "type": "module",
   "private": true,
   "scripts": {

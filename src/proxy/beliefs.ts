@@ -1,5 +1,5 @@
 /**
- * Axion Lens — Belief graph API.
+ * Axion Lens - Belief graph API.
  *
  * GET /api/beliefs/:sessionId → returns the belief graph for a session as JSON,
  * fetched from the session's Durable Object.
@@ -17,7 +17,7 @@ export function extractSessionId(pathname: string): string | null {
   return clean || null;
 }
 
-/** Handle GET /api/beliefs/:sessionId — fetch the belief graph from the DO. */
+/** Handle GET /api/beliefs/:sessionId - fetch the belief graph from the DO. */
 export async function fetchBeliefs(
   _request: Request,
   env: Env,

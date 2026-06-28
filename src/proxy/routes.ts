@@ -1,5 +1,5 @@
 /**
- * Axion Lens — Route handlers for non-proxy routes (dashboard + beliefs API).
+ * Axion Lens - Route handlers for non-proxy routes (dashboard + beliefs API).
  */
 
 import type { Env } from "./types";

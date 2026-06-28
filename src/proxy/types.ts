@@ -1,5 +1,5 @@
 /**
- * Axion Lens — Proxy types.
+ * Axion Lens - Proxy types.
  *
  * Shared type definitions for the proxy layer. These describe the request/response
  * shapes that flow through the worker so callers don't depend on any upstream SDK.
