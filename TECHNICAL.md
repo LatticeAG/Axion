@@ -386,6 +386,7 @@ The open-source core is fully functional standalone. The SaaS layer adds conveni
 ## Provenance
 
 - **Author:** LatticeAG
-- **GitHub:** [LatticeAG/Axion](https://github.com/LatticeAG/Axion)
+- **Product page:** [latticeag.vercel.app/products/axion](https://latticeag.vercel.app/products/axion)
+- **GitHub:** [github.com/LatticeAG/Axion](https://github.com/LatticeAG/Axion)
 - **License:** MIT
 - **Brand:** LatticeAG - *"Agents, together."*
