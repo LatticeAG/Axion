@@ -1,0 +1,347 @@
+/* Axion Lens Dashboard — LatticeAG Brand Styles */
+/* Black-first monochrome premium AI-lab aesthetic */
+
+:root {
+  /* Base palette */
+  --bg: #000000;
+  --bg-elevated: #0a0a0a;
+  --bg-card: #0f0f0f;
+  --border: #1a1a1a;
+  --border-hover: #333;
+  --text: #ffffff;
+  --text-secondary: #888;
+  --text-muted: #555;
+
+  /* Belief type accents */
+  --causal: #3b82f6;      /* blue */
+  --assumption: #eab308;   /* yellow */
+  --intention: #22c55e;   /* green */
+  --evidence: #a855f7;    /* purple */
+
+  /* Confidence */
+  --conf-high: #22c55e;
+  --conf-mid: #eab308;
+  --conf-low: #ef4444;
+
+  /* Font */
+  --mono: "JetBrains Mono", "Fira Code", "SF Mono", "Menlo", "Consolas", monospace;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-hover);
+}
+
+/* Layout */
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 6rem;
+}
+
+/* Header */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2rem;
+}
+
+.header-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.header-title .accent {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+/* Stats bar */
+.stats {
+  display: flex;
+  gap: 2rem;
+  margin-bottom: 2rem;
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.stat-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
+/* Filter bar */
+.filters {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.filter-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
+.filter-select,
+.filter-input {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.6rem;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  border-radius: 2px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.filter-select:hover,
+.filter-input:hover {
+  border-color: var(--border-hover);
+}
+
+.filter-select:focus,
+.filter-input:focus {
+  border-color: var(--text-secondary);
+}
+
+.filter-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.filter-toggle input[type="checkbox"] {
+  accent-color: var(--causal);
+}
+
+/* Session selector */
+.session-selector {
+  margin-bottom: 2rem;
+}
+
+.session-selector select {
+  width: 100%;
+  max-width: 400px;
+}
+
+/* Timeline */
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.belief-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 1rem 1.25rem;
+  border-radius: 3px;
+  transition: border-color 0.15s;
+  position: relative;
+}
+
+.belief-card:hover {
+  border-color: var(--border-hover);
+}
+
+.belief-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+}
+
+.belief-card[data-type="causal"]::before { background: var(--causal); }
+.belief-card[data-type="assumption"]::before { background: var(--assumption); }
+.belief-card[data-type="intention"]::before { background: var(--intention); }
+.belief-card[data-type="evidence"]::before { background: var(--evidence); }
+
+.belief-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.belief-type-badge {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 2px;
+  font-weight: 600;
+}
+
+.belief-type-badge[data-type="causal"] {
+  color: var(--causal);
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+}
+.belief-type-badge[data-type="assumption"] {
+  color: var(--assumption);
+  background: rgba(234, 179, 8, 0.1);
+  border: 1px solid rgba(234, 179, 8, 0.2);
+}
+.belief-type-badge[data-type="intention"] {
+  color: var(--intention);
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+.belief-type-badge[data-type="evidence"] {
+  color: var(--evidence);
+  background: rgba(168, 85, 247, 0.1);
+  border: 1px solid rgba(168, 85, 247, 0.2);
+}
+
+.belief-timestamp {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.belief-text {
+  color: var(--text);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin-bottom: 0.5rem;
+}
+
+.belief-meta {
+  display: flex;
+  gap: 1.5rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+
+.belief-meta-label {
+  color: var(--text-muted);
+}
+
+/* Confidence bar */
+.confidence-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.confidence-track {
+  width: 60px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.confidence-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+
+.confidence-fill[data-level="high"] { background: var(--conf-high); }
+.confidence-fill[data-level="mid"] { background: var(--conf-mid); }
+.confidence-fill[data-level="low"] { background: var(--conf-low); }
+
+.confidence-value {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  min-width: 30px;
+}
+
+/* Empty state */
+.empty-state {
+  text-align: center;
+  padding: 4rem 1rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* Footer */
+.footer {
+  margin-top: 4rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+
+.footer-wordmark {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.3em;
+  color: var(--text-muted);
+}
+
+.footer-wordmark a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.footer-wordmark a:hover {
+  color: var(--text);
+}
