@@ -17,15 +17,13 @@ export interface Env {
   ASSETS: Fetcher;
 }
 
-/** A single belief extracted from a model response. */
-export interface Belief {
-  id: string;
-  belief: string;
-  evidence: string;
-  confidence: number;
-  action_taken?: string;
-  timestamp: number;
-}
+/**
+ * A single belief extracted from a model response.
+ *
+ * This is the canonical lens shape (`ExtractedBelief`) so the proxy, the
+ * Durable Object store, and the dashboard all agree on one record type.
+ */
+export type Belief = import('../lens/types.js').ExtractedBelief;
 
 /** Result of belief extraction for a single response. */
 export interface ExtractionResult {

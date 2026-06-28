@@ -127,7 +127,7 @@ describe("teeResponseForExtraction", () => {
   it("streams concurrently: caller does not wait for extraction", async () => {
     // Build a slow stream that emits chunks over time.
     const encoder = new TextEncoder();
-    let controller: ReadableStreamDefaultController<Uint8Array>;
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
     const stream = new ReadableStream<Uint8Array>({
       start(c) {
         controller = c;
