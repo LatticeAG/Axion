@@ -198,7 +198,7 @@ function App() {
     // Footer
     React.createElement('div', { className: 'footer' },
       React.createElement('div', { className: 'footer-wordmark' },
-        React.createElement('a', { href: 'https://github.com/mosesman831', target: '_blank' }, 'LatticeAG'),
+        React.createElement('a', { href: 'https://github.com/LatticeAG/Axion', target: '_blank' }, 'LatticeAG'),
         ' - Agents, together.'
       )
     )
