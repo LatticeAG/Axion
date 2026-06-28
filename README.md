@@ -229,6 +229,12 @@ axion/
 
 ---
 
+## Links
+
+- **Product page:** [latticeag.vercel.app/products/axion](https://latticeag.vercel.app/products/axion)
+- **Source code:** [github.com/LatticeAG/Axion](https://github.com/LatticeAG/Axion)
+- **LatticeAG:** [latticeag.vercel.app](https://latticeag.vercel.app)
+
 ## Known Issues
 
 - Phase 2 (Axion Loop) and Phase 3 (Axion Gate) are not yet implemented
