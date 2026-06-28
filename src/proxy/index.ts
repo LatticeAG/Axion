@@ -20,6 +20,10 @@ import { teeResponseForExtraction } from "./stream";
 import { handleDashboard } from "./routes";
 import { fetchBeliefs } from "./beliefs";
 
+// Re-export the Durable Object class so wrangler can bind it from the
+// entrypoint. wrangler.toml declares class_name = "SessionDurableObject".
+export { SessionDurableObject } from "../state/SessionDurableObject";
+
 export default {
   async fetch(
     request: Request,
