@@ -9,7 +9,7 @@ Agent cognitive middleware - inspect, detect, and verify agent reasoning in real
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-f38020?logo=cloudflare&logoColor=white&labelColor=black)](https://workers.cloudflare.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178c6?logo=typescript&logoColor=white&labelColor=black)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg?logo=opensourceinitiative&logoColor=white)](./LICENSE)
-[![Open Source](https://img.shields.io/badge/Open-Source-black.svg?logo=github&logoColor=white)](https://github.com/mosesman831)
+[![Open Source](https://img.shields.io/badge/Open-Source-black.svg?logo=github&logoColor=white)](https://github.com/LatticeAG/Axion)
 
 </div>
 
@@ -96,7 +96,7 @@ Requires Node.js and a Cloudflare account.
 
 ```bash
 # Clone
-git clone https://github.com/mosesman831/axion.git
+git clone https://github.com/LatticeAG/Axion.git
 cd axion
 
 # Install
@@ -247,6 +247,6 @@ MIT - see [LICENSE](./LICENSE).
 
 **LatticeAG** - *Agents, together.*
 
-[github.com/mosesman831](https://github.com/mosesman831)
+[github.com/LatticeAG/Axion](https://github.com/LatticeAG/Axion)
 
 </div>
