@@ -27,7 +27,7 @@ export async function runExtraction(
 
   let result: ExtractionResult;
   try {
-    const beliefs = await extractBeliefs(responseText);
+    const beliefs = await extractBeliefs(responseText, { sessionId });
     result = {
       sessionId,
       beliefs,

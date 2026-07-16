@@ -32,7 +32,10 @@ export async function fetchBeliefs(
   try {
     const id = env.SESSION.idFromName(sessionId);
     const stub = env.SESSION.get(id);
-    doRes = await stub.fetch("https://internal/beliefs");
+    // Pass the path sessionId as a hint so the DO can echo a human-readable
+    // sessionId even if no beliefs have been written yet (DO returns flat).
+    const hint = `https://internal/beliefs?sessionId=${encodeURIComponent(sessionId)}`;
+    doRes = await stub.fetch(hint);
   } catch (err) {
     return jsonError(
       502,
