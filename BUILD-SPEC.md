@@ -198,14 +198,14 @@ Also forward: OpenAI-Organization, anthropic-version (when Anthropic path), cont
 
 ## Acceptance checklist
 
-- [ ] `npm run check` passes
-- [ ] OpenAI proxy works with caller Bearer key and no worker secret
-- [ ] Anthropic `/v1/messages` routed and text extracted for Lens
-- [ ] Dashboard loads beliefs by pasted session id
-- [ ] `GET /api/beliefs/:id` returns flat `ExtractedBelief[]`
-- [ ] Enforce mode rejects invalid JSON schema outputs and retries
-- [ ] Docs do not claim unimplemented DAG/NLP/passthrough-wrongly
-- [ ] No `Bearer undefined` path
+- [x] `npm run check` passes (100 tests + tsc)
+- [x] OpenAI proxy works with caller Bearer key and no worker secret
+- [x] Anthropic `/v1/messages` routed and text extracted for Lens
+- [x] Dashboard loads beliefs by pasted session id
+- [x] `GET /api/beliefs/:id` returns flat `ExtractedBelief[]`
+- [x] Enforce mode rejects invalid JSON schema outputs and retries
+- [x] Docs do not claim unimplemented DAG/NLP/passthrough-wrongly
+- [x] No `Bearer undefined` path
 
 ---
 

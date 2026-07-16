@@ -1,67 +1,60 @@
 # Axion
 
-> Agent cognitive middleware - a proxy layer that inspects, detects, and verifies agent reasoning.
-> Open-source core. Hosted SaaS dashboard later.
+> Agent cognitive middleware. A proxy that reads an agent's reasoning from its own model output.
+> Open-source core. The vision is three layers; today one of them ships.
+
+> **Source of truth for scope:** [BUILD-SPEC.md](./BUILD-SPEC.md). All product decisions there are locked. This file keeps the brand and architecture at a high level. Where the two disagree, BUILD-SPEC wins.
 
 ---
 
-## What It Is
+## What it is
 
-Axion is a proxy that sits between an AI agent and the outside world. It intercepts model responses, agent outputs, and tool calls - then inspects, detects, and verifies agent reasoning in real time.
-
-Any agent that supports `base_url` override works. Zero code changes.
+Axion is a proxy between an AI agent and a model API. Override the agent's base URL and Axion forwards each request upstream, streams the response back with zero added latency, then parses the assistant text for reasoning fragments and stores them per session. Any agent that supports a `base_url` override works, with no code changes.
 
 ```
-Agent ←→ Axion ←→ Model API
-Agent ←→ Axion ←→ Tools (file, shell, API)
+Agent  <->  Axion  <->  Model API
 ```
 
-## What Problem It Solves
+## The problem
 
-Agents make decisions developers can't understand, get stuck in loops they can't break, and take actions they can't verify. Existing tools show **what** happened (observability). Axion shows **why** it happened, **when** it's going wrong, and **stops** it before damage is done.
+Agents make decisions you cannot see. Observability tools show what an agent did (the calls, the tokens, the latency). They do not show the reasoning behind a choice. Axion extracts that reasoning as it streams past and lays it out as a per-session timeline you can read after the fact.
+
+The longer-term goal is to act on that reasoning: catch loops, block bad tool calls. Those layers are not built. See status below.
 
 ---
 
-## The Three Layers
+## The three layers
 
-### Layer 1 - Axion Lens (belief inspection)
-**Observe. Read-only. Cannot break anything.**
+### Layer 1: Axion Lens (belief inspection)
 
-Intercepts model responses and extracts the agent's beliefs, assumptions, and reasoning chain. Builds a belief DAG across the session. When something goes wrong, you trace back to the exact belief that caused the wrong action.
+**Status: shipping (observe path).** Read-only. Cannot change agent behaviour.
 
-- Extracts `{belief, evidence, confidence, action_taken}` from each model response
-- Rule-based parsing (regex + NLP), not model-based - fast and cheap
-- Builds a belief graph: beliefs → decisions → outcomes
-- Backtracks from failures to root-cause beliefs
-- Serves a timeline dashboard: every decision point, beliefs behind it, confidence, correct/wrong
-- Feeds into existing observability tools (Langfuse, Arize) as structured metadata
+Intercepts each model response and extracts reasoning fragments (causal claims, assumptions, intentions, cited evidence) with a confidence score, then stores them as a flat chronological timeline per session. A local dashboard reads the timeline back.
 
-**This is the MVP. Ships first.**
+- Rule-based regex parsing, no model call, sub-millisecond.
+- Emits `ExtractedBelief` records: `{ id, sessionId, type, belief, evidence?, confidence, actionTaken?, timestamp, rawText, line }`.
+- Confidence is a per-pattern baseline nudged by additive markers, clamped to `[0.1, 1.0]`.
+- Stored in a Durable Object as append-only batches; the public API flattens them.
 
-### Layer 2 - Axion Loop (revision loop breaker)
-**Detect + intervene. Uses belief graph from Layer 1.**
+There is no belief graph and no root-cause backtracking. Those were in earlier drafts and are not implemented.
 
-Detects when an agent is stuck in a revision loop and intervenes with targeted feedback - not a crude kill signal.
+### Layer 2: Axion Loop (revision loop breaker)
 
-- Embeds each agent output, maintains sliding window of last 10-20 outputs
-- If cosine similarity exceeds threshold (0.85), flags potential loop
-- Classifies: productive iteration vs stuck loop vs thrashing (uses belief graph)
-- Injects targeted feedback: "You've tried [X] 3 times with the same result. Consider: [alternatives not yet tried]."
-- Escalation ladder: soft nudge → hard nudge (force re-read task) → escalate to human
+**Status: planned. Not implemented.**
 
-### Layer 3 - Axion Gate (runtime self-verification)
-**Block + correct. Uses belief graph + plan from Layer 1.**
+The intent is to detect when an agent repeats the same reasoning and inject targeted feedback instead of a hard kill. This needs stable multi-turn sessions and an embedding step, neither of which exists yet.
 
-Verification gate that checks agent actions **before** they execute. Not post-hoc evals - real-time blocking with corrections fed back to the agent.
+### Layer 3: Axion Gate (runtime verification)
 
-- Intercepts tool calls (file writes, shell, API) before execution
-- Three checks per call:
-  - **Plan alignment:** does this action match the stated plan?
-  - **Contradiction detection:** does this contradict a prior decision?
-  - **Pattern matching:** does this match a known failure anti-pattern?
-- Blocks bad actions, injects correction: "Blocked: you decided to use customer_uuid in step 3 but are writing user_id."
-- Uses cheap flash models via OpenCode Zen for verification (target: <500ms, <$0.001 per check)
-- Logs every blocked action as training data for the rules engine
+**Status: planned. Not implemented.**
+
+The intent is to check tool calls before they run (plan alignment, contradiction, known failure patterns) and block bad ones. No tool-call interception exists in the code.
+
+### PolyVerdict (structured output enforce)
+
+**Status: partial. Syntax path shipped, opt-in.**
+
+A separate enforce path in the same Worker. When a caller supplies a JSON Schema it validates and type-coerces the model output and retries up to 3 times. It is not part of the default observe path and only runs when a schema is present. See [SPEC-PolyVerdict.md](./SPEC-PolyVerdict.md).
 
 ---
 
@@ -69,82 +62,90 @@ Verification gate that checks agent actions **before** they execute. Not post-ho
 
 ```
 Agent
-  ↕
-Axion Proxy (CF Worker)
-  ├── Axion Lens    → intercepts model responses → extracts beliefs → waitUntil()
-  ├── Axion Loop    → intercepts agent outputs → embeds → detects loops
-  └── Axion Gate    → intercepts tool calls → verifies → blocks/allows
-  ↕
-Model API / Tools
+  |
+Axion Worker (Cloudflare)
+  |- Auth: passthrough caller key, or configured server key, else 401
+  |- POST /v1/chat/completions   OpenAI adapter    -> observe or enforce
+  |- POST /v1/messages           Anthropic adapter  -> observe or enforce
+  |- GET  /api/beliefs/:id        flat ExtractedBelief[]
+  |- GET  /dashboard              paste-session timeline UI
+  |
+Model API
 
-State: Durable Object per session (belief DAG in memory)
+State: SessionDurableObject, one per session, append-only belief batches in DO storage.
 ```
 
-## Build Order
+## Build order and status
 
 | Phase | What | Status |
 |---|---|---|
-| 1 | Axion Lens - proxy + belief extraction + local dashboard | **Next** (see [PLAN.md](./PLAN.md)) |
-| 2 | Axion Loop - embedding detection + intervention injection | Future |
-| 3 | Axion Gate - tool call interception + verification + blocking | Future |
+| 1 | Axion Lens: OpenAI + Anthropic observe proxy, belief timeline, DO store, dashboard | **Shipped** |
+| 1 | PolyVerdict enforce mode (syntax validate + coerce + retry), opt-in | **Shipped** |
+| 2 | Axion Loop: loop detection + intervention | Planned, not started |
+| 3 | Axion Gate: tool-call interception + verification + blocking | Planned, not started |
+| later | Semantic PolyVerdict, schema registry, belief graph, hosted SaaS | Not started |
 
-Production OSS readiness (auth, dashboard contract, docs honesty, PolyVerdict sequencing) is specified in [PLAN.md](./PLAN.md). Do not treat Loop/Gate/PolyVerdict as part of the Phase 1 OSS tag until that plan’s Wave 0–1 exits.
+The locked build order and module map are in [BUILD-SPEC.md](./BUILD-SPEC.md). [PLAN.md](./PLAN.md) records how the current state was reached and what is deferred.
 
-## Open-Source Scope (Phase 1)
+## Open-source scope (Phase 1)
 
-This repo contains the open-source core:
+This repo is the open-source core:
 
-- CF Worker proxy (streams model responses, zero added latency)
-- Belief extraction engine (rule-based parser)
-- Session state (Durable Object)
-- Local dashboard (single session, served by Worker)
+- CF Worker proxy for OpenAI chat completions and Anthropic Messages, zero added latency.
+- Rule-based belief extraction.
+- Per-session Durable Object store.
+- Local single-session dashboard.
+- Opt-in PolyVerdict syntax enforce mode.
 
-**Not in open-source core (SaaS later):**
-- Hosted multi-session dashboard
-- Cross-session belief analysis
-- Team sharing + alerting
-- Community belief pattern library
+Not in the open-source core (possible SaaS later):
 
-## Tech Stack
+- Hosted multi-session dashboard.
+- Cross-session analysis.
+- Team sharing and alerting.
+- Community pattern library.
 
-- **Runtime:** Cloudflare Workers
-- **Session state:** Durable Objects
-- **Extraction:** Rule-based (regex + lightweight NLP), no model dependency
-- **Dashboard:** React, served from Worker static assets
-- **Zero external dependencies** for the open-source core
+## Tech stack
+
+- **Runtime:** Cloudflare Workers.
+- **State:** Durable Objects (per-session append-only storage).
+- **Extraction:** regex rules, no model dependency.
+- **Dashboard:** React from CDN, served as static assets from the Worker.
+- **Runtime dependencies:** none.
 
 ## Integration
 
 ```bash
-# Claude Code
-export ANTHROPIC_BASE_URL=https://your-axion-worker.dev
-
-# Codex / OpenAI agents
+# OpenAI-compatible agents
 export OPENAI_BASE_URL=https://your-axion-worker.dev
 
-# Cursor - set custom API base URL in settings
-# Hermes - set provider base_url in config.yaml
+# Anthropic Messages clients (e.g. Claude Code)
+export ANTHROPIC_BASE_URL=https://your-axion-worker.dev
 ```
 
-Agent works normally. Axion observes in the background. Dashboard at `https://your-axion-worker.dev/dashboard`.
+Send `x-axion-session: <id>` to correlate a multi-turn run, then open the dashboard at `https://your-axion-worker.dev/dashboard` and paste the id. Only these two provider routes are implemented; other agents work only if they speak one of these two API shapes.
 
 ---
 
 ## Brand
 
-**Axion** - a particle theorized to exist but never directly observed. Agent beliefs are the same: invisible, but they shape every decision. Axion makes them visible.
+**Axion** is a particle theorized to exist but never directly observed, detected only through its effects. Agent beliefs are the same. They are invisible but they drive every decision.
 
-**LatticeAG** - *"Agents, together."*
+**LatticeAG** - Agents, together.
 
 ```
 axion/
-├── SPEC.md          ← this file
-├── README.md
-├── src/
-│   ├── proxy/        ← CF Worker: stream proxy + interception
-│   ├── lens/         ← belief extraction engine
-│   ├── state/        ← Durable Object: session belief graph
-│   └── dashboard/    ← React: belief timeline
-├── wrangler.toml
-└── package.json
+|- BUILD-SPEC.md   <- locked scope, source of truth
+|- SPEC.md         <- this file
+|- README.md
+|- TECHNICAL.md
+|- SPEC-PolyVerdict.md
+|- PLAN.md
+|- src/
+|  |- proxy/       CF Worker: routing, auth, tee, providers, enforce wiring
+|  |- lens/        belief extraction engine
+|  |- polyverdict/ schema validate + coerce + retry
+|  |- state/       Durable Object session store
+|  |- dashboard/   React timeline UI
+|- wrangler.toml
+|- package.json
 ```

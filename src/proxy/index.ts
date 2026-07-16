@@ -1,27 +1,35 @@
 /**
  * Axion Lens - Cloudflare Worker entry point.
  *
- * Sits between an AI agent and the model API. Streams responses through with
- * zero added latency and triggers belief extraction in the background via
- * ctx.waitUntil() after the stream completes.
- *
  * Routes:
- *   POST /v1/chat/completions   → proxy to upstream model API (OpenAI-compatible)
- *   GET  /dashboard             → dashboard HTML (served via ASSETS binding)
- *   GET  /api/beliefs/:sessionId → belief graph JSON from the Durable Object
+ *   POST /v1/chat/completions  → OpenAI-compatible observe / PolyVerdict enforce
+ *   POST /v1/messages          → Anthropic Messages observe / PolyVerdict enforce
+ *   GET  /dashboard*           → dashboard static assets
+ *   GET  /api/beliefs/:id      → flat belief timeline for a session
  *
- * The proxy is OpenAI-compatible: it accepts the same request format and
- * returns the same response format (streaming or not) as the upstream API.
+ * Default path is observe-only (tee + waitUntil extraction, zero added latency).
+ * When a schema trigger is present (x-axion-schema or response_format.json_schema),
+ * the request enters PolyVerdict enforce mode (buffered, may retry).
  */
 
-import type { ChatCompletionRequest, Env } from "./types";
+import type { Env } from "./types";
+import { resolveUpstreamHeaders } from "./auth";
+import { extractAssistantText } from "./content";
 import { runExtraction } from "./extraction";
 import { teeResponseForExtraction } from "./stream";
 import { handleDashboard } from "./routes";
 import { fetchBeliefs } from "./beliefs";
+import { matchProvider } from "./providers";
+import type { ProviderAdapter, ProviderId } from "./providers/types";
+import {
+  detectSchemaTrigger,
+  enforceOnce,
+  buildRetryMessages,
+  buildRetryMessagesAnthropic,
+  MAX_ENFORCE_ATTEMPTS,
+  type SchemaTrigger,
+} from "../polyverdict";
 
-// Re-export the Durable Object class so wrangler can bind it from the
-// entrypoint. wrangler.toml declares class_name = "SessionDurableObject".
 export { SessionDurableObject } from "../state/SessionDurableObject";
 
 export default {
@@ -33,14 +41,10 @@ export default {
     const url = new URL(request.url);
     const { pathname } = url;
 
-    // --- Routing -----------------------------------------------------------
-
-    // Belief graph API - read from the Durable Object for a session.
     if (pathname.startsWith("/api/beliefs/") && request.method === "GET") {
       return fetchBeliefs(request, env, pathname);
     }
 
-    // Dashboard - served via the ASSETS static binding.
     if (
       pathname === "/dashboard" ||
       pathname === "/dashboard/" ||
@@ -49,12 +53,11 @@ export default {
       return handleDashboard(request, env);
     }
 
-    // Chat completions proxy - the main event.
-    if (pathname === "/v1/chat/completions" && request.method === "POST") {
-      return proxyChatCompletion(request, env, ctx);
+    const provider = matchProvider(pathname, request.method);
+    if (provider) {
+      return proxyProviderRequest(request, env, ctx, provider);
     }
 
-    // Root → redirect to dashboard for human visitors.
     if (pathname === "/") {
       return Response.redirect(
         new URL("/dashboard", request.url).toString(),
@@ -66,49 +69,82 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-// --- Proxy ---------------------------------------------------------------
+// --- Proxy ----------------------------------------------------------------
 
-/**
- * Forward a chat completion request to the upstream model API, streaming the
- * response back with zero added latency. After the stream completes, belief
- * extraction runs in the background via ctx.waitUntil().
- */
-async function proxyChatCompletion(
+async function proxyProviderRequest(
   request: Request,
   env: Env,
-  ctx: ExecutionContext
+  ctx: ExecutionContext,
+  provider: ProviderAdapter
 ): Promise<Response> {
-  // Resolve session ID (x-axion-session header or generate a UUID).
-  const sessionId = request.headers.get("x-axion-session") || crypto.randomUUID();
+  const sessionId =
+    request.headers.get("x-axion-session") || crypto.randomUUID();
 
-  // Parse the body so we can inspect `stream` and pass it through.
-  let body: ChatCompletionRequest;
+  let body: Record<string, unknown>;
   let rawBody: string;
   try {
     rawBody = await request.text();
-    body = JSON.parse(rawBody) as ChatCompletionRequest;
+    body = JSON.parse(rawBody) as Record<string, unknown>;
   } catch {
     return jsonError(400, "Invalid JSON request body");
   }
 
-  if (!Array.isArray(body.messages) || body.messages.length === 0) {
-    return jsonError(400, "Request must include a non-empty 'messages' array");
+  const validation = provider.validateRequest(body);
+  if (!validation.ok) {
+    return jsonError(400, validation.message);
   }
 
-  const isStreaming = body.stream === true;
-  const upstreamUrl = resolveUpstreamUrl(env, "/v1/chat/completions");
+  const auth = resolveUpstreamHeaders(request, env, provider.id);
+  if (!auth.ok) {
+    return auth.response;
+  }
 
-  // Build the upstream request. We forward the parsed body (re-serialized)
-  // so we control exactly what goes upstream.
-  const upstreamReq = new Request(upstreamUrl, {
-    method: "POST",
-    headers: buildUpstreamHeaders(request, env),
-    body: rawBody,
+  const trigger = detectSchemaTrigger(request.headers, body);
+  if (trigger) {
+    return enforceProviderRequest({
+      request,
+      env,
+      ctx,
+      provider,
+      sessionId,
+      body,
+      authHeaders: auth.headers,
+      trigger,
+    });
+  }
+
+  return observeProviderRequest({
+    env,
+    ctx,
+    provider,
+    sessionId,
+    body,
+    rawBody,
+    authHeaders: auth.headers,
   });
+}
+
+/** Zero-latency observe path: tee upstream response, extract in waitUntil. */
+async function observeProviderRequest(opts: {
+  env: Env;
+  ctx: ExecutionContext;
+  provider: ProviderAdapter;
+  sessionId: string;
+  body: Record<string, unknown>;
+  rawBody: string;
+  authHeaders: Headers;
+}): Promise<Response> {
+  const { env, ctx, provider, sessionId, body, rawBody, authHeaders } = opts;
+  const isStreaming = body.stream === true;
+  const upstreamUrl = resolveUpstreamUrl(env, provider.upstreamPath);
 
   let upstreamRes: Response;
   try {
-    upstreamRes = await fetch(upstreamReq);
+    upstreamRes = await fetch(upstreamUrl, {
+      method: "POST",
+      headers: authHeaders,
+      body: rawBody,
+    });
   } catch (err) {
     return jsonError(
       502,
@@ -118,28 +154,188 @@ async function proxyChatCompletion(
     );
   }
 
-  // If upstream returned an error, pass it through untouched.
   if (!upstreamRes.ok) {
-    return upstreamRes;
+    return withSessionHeader(upstreamRes, sessionId);
   }
 
   const contentType = upstreamRes.headers.get("content-type") || "";
   const isSse =
     isStreaming || contentType.includes("text/event-stream");
 
-  // Tee the body: one branch streams to the caller (untouched), the other
-  // accumulates text for belief extraction. Zero added latency.
-  const { response, accumulatedText } = teeResponseForExtraction(upstreamRes, isSse);
+  const { response, accumulatedText } = teeResponseForExtraction(
+    upstreamRes,
+    isSse,
+    provider.id
+  );
 
-  // After the response is returned, run extraction in the background.
   ctx.waitUntil(
     (async () => {
-      const text = await accumulatedText;
+      const accumulated = await accumulatedText;
+      const text = extractAssistantText({
+        provider: provider.id,
+        isSse,
+        accumulated,
+      });
       await runExtraction(env, sessionId, text);
     })()
   );
 
-  // Carry the session ID back in a header so callers can correlate.
+  return withSessionHeader(response, sessionId);
+}
+
+/** PolyVerdict enforce path: buffer, validate/coerce, retry ≤3. */
+async function enforceProviderRequest(opts: {
+  request: Request;
+  env: Env;
+  ctx: ExecutionContext;
+  provider: ProviderAdapter;
+  sessionId: string;
+  body: Record<string, unknown>;
+  authHeaders: Headers;
+  trigger: SchemaTrigger;
+}): Promise<Response> {
+  const { env, ctx, provider, sessionId, body, authHeaders, trigger } = opts;
+  const upstreamUrl = resolveUpstreamUrl(env, provider.upstreamPath);
+
+  // Enforce always forces non-streaming so we can validate the full payload.
+  let messages = Array.isArray(body.messages) ? [...(body.messages as unknown[])] : [];
+  let lastErrors: string[] = ["enforce did not run"];
+  let lastText = "";
+
+  for (let attempt = 1; attempt <= MAX_ENFORCE_ATTEMPTS; attempt++) {
+    const attemptBody = {
+      ...body,
+      stream: false,
+      messages,
+    };
+    // Strip client response_format so we own validation; keep model etc.
+    delete (attemptBody as { response_format?: unknown }).response_format;
+
+    let upstreamRes: Response;
+    try {
+      upstreamRes = await fetch(upstreamUrl, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify(attemptBody),
+      });
+    } catch (err) {
+      return jsonError(
+        502,
+        `Failed to reach upstream model API: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+
+    if (!upstreamRes.ok) {
+      return withSessionHeader(upstreamRes, sessionId);
+    }
+
+    const raw = await upstreamRes.text();
+    lastText = provider.extractAssistantText(raw);
+    const result = enforceOnce(lastText, trigger.schema);
+
+    if (result.ok && result.jsonText !== undefined) {
+      const delivered = result.jsonText;
+      ctx.waitUntil(runExtraction(env, sessionId, delivered));
+      return withSessionHeader(
+        buildEnforcedResponse(provider.id, body, delivered),
+        sessionId
+      );
+    }
+
+    lastErrors = result.errors;
+    if (attempt < MAX_ENFORCE_ATTEMPTS) {
+      const ctxRetry = {
+        schema: trigger.schema,
+        errors: result.errors,
+        assistantText: lastText,
+        name: trigger.name,
+      };
+      messages =
+        provider.id === "anthropic"
+          ? buildRetryMessagesAnthropic(messages as never, ctxRetry)
+          : buildRetryMessages(messages as never, ctxRetry);
+    }
+  }
+
+  // Exhausted retries: return 422 with last errors; still extract last text.
+  ctx.waitUntil(runExtraction(env, sessionId, lastText));
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: "PolyVerdict: output failed schema validation after retries",
+        errors: lastErrors,
+        attempts: MAX_ENFORCE_ATTEMPTS,
+      },
+    }),
+    {
+      status: 422,
+      headers: {
+        "Content-Type": "application/json",
+        "x-axion-session": sessionId,
+      },
+    }
+  );
+}
+
+function buildEnforcedResponse(
+  provider: ProviderId,
+  requestBody: Record<string, unknown>,
+  jsonText: string
+): Response {
+  const model =
+    typeof requestBody.model === "string" ? requestBody.model : "unknown";
+  const id = `axion-pv-${crypto.randomUUID()}`;
+
+  if (provider === "anthropic") {
+    const payload = {
+      id,
+      type: "message",
+      role: "assistant",
+      model,
+      content: [{ type: "text", text: jsonText }],
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    };
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const payload = {
+    id,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: jsonText },
+        finish_reason: "stop",
+      },
+    ],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+  };
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+// --- Helpers -------------------------------------------------------------
+
+function resolveUpstreamUrl(env: Env, path: string): string {
+  const base = (env.UPSTREAM_API_URL || "https://api.openai.com").replace(
+    /\/+$/,
+    ""
+  );
+  return `${base}${path}`;
+}
+
+function withSessionHeader(response: Response, sessionId: string): Response {
   const headers = new Headers(response.headers);
   headers.set("x-axion-session", sessionId);
   return new Response(response.body, {
@@ -149,31 +345,6 @@ async function proxyChatCompletion(
   });
 }
 
-// --- Helpers -------------------------------------------------------------
-
-/** Build the upstream URL from the env base URL + path. */
-function resolveUpstreamUrl(env: Env, path: string): string {
-  const base = (env.UPSTREAM_API_URL || "https://api.openai.com").replace(
-    /\/+$/,
-    ""
-  );
-  return `${base}${path}`;
-}
-
-/** Forward auth + content headers upstream, plus the API key. */
-function buildUpstreamHeaders(request: Request, env: Env): Headers {
-  const headers = new Headers();
-  headers.set("Content-Type", "application/json");
-  headers.set("Authorization", `Bearer ${env.UPSTREAM_API_KEY}`);
-
-  // Forward the Organization header if the caller provided one (OpenAI uses it).
-  const org = request.headers.get("OpenAI-Organization");
-  if (org) headers.set("OpenAI-Organization", org);
-
-  return headers;
-}
-
-/** Return a JSON error response. */
 function jsonError(status: number, message: string): Response {
   return new Response(JSON.stringify({ error: { message } }), {
     status,

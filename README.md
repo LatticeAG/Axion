@@ -2,7 +2,7 @@
 
 # Axion
 
-Agent cognitive middleware - inspect, detect, and verify agent reasoning in real time.
+Agent cognitive middleware. A proxy that reads what an agent believes from its own model output, in real time, with no code changes to the agent.
 
 **by LatticeAG**
 
@@ -15,244 +15,234 @@ Agent cognitive middleware - inspect, detect, and verify agent reasoning in real
 
 ---
 
-## Overview
+## What this is
 
-> **Agent cognitive middleware - a proxy layer that makes agent reasoning visible, diagnosable, and verifiable.**
-> Observe beliefs. Detect loops. Block bad actions.
+Axion is a Cloudflare Worker that sits in front of a model API. Point an agent at it by overriding the base URL. The Worker forwards each request upstream and streams the response straight back with zero added latency. After the response is delivered, it runs a rule-based parser over the assistant text to pull out reasoning fragments (causal claims, assumptions, intentions, cited evidence), stamps them with a confidence score, and stores them per session. A local dashboard reads them back as a timeline.
 
-Axion sits between an AI agent and the outside world. It intercepts model responses, agent outputs, and tool calls - then reconstructs the agent's decision-making chain in real time. Existing observability tools show *what* happened. Axion shows *why* it happened, *when* it's going wrong, and stops it before damage is done.
-
-Named after the axion particle: theorized to exist, never directly observed, detected only through its effects on surrounding matter. Agent beliefs are the same - invisible, but they shape every decision. Axion makes them visible.
-
-Built for any agent that supports `base_url` override. Zero code changes.
+Named after the axion particle: theorized to exist, never directly observed, detected only through its effects. Agent beliefs are the same. They are invisible but they shape every decision, and this makes them visible.
 
 ```
-Agent ←→ Axion (CF Worker) ←→ Model API
-                             ←→ Tools (file, shell, API)
+Agent  <->  Axion (CF Worker)  <->  Model API
 ```
 
----
-
-## Core Features
-
-| Feature | Description |
-| --- | --- |
-| **Belief Extraction** | Rule-based parser extracts causal claims, assumptions, intentions, and evidence from each model response. No model dependency, sub-millisecond. |
-| **Belief DAG** | Beliefs are linked into a directed acyclic graph across the session. When an action fails, backtrack to the root-cause belief. |
-| **SSE Streaming Proxy** | Forwards model responses with zero added latency. Belief extraction runs in `waitUntil()` after the stream completes. |
-| **Session State** | Durable Object per session holds the full belief graph in memory. No external database required. |
-| **Timeline Dashboard** | Visual timeline of every decision point, beliefs behind it, confidence level, and evidence cited. Filter by type, confidence, or wrong beliefs only. |
-| **Agent-Agnostic** | Works with Claude Code, Codex CLI, Cursor, Gemini CLI, Hermes, LangChain, and any agent that supports `base_url` override. |
+> **Honest scope.** This repo is the Phase 1 observe path plus an opt-in schema enforce mode. It does not detect loops, block tool calls, or build a belief graph. See [What is not built](#what-is-not-built) before you form expectations. The full product plan lives in [BUILD-SPEC.md](./BUILD-SPEC.md), which is the source of truth for scope.
 
 ---
 
-## Advanced Capabilities
+## What is shipped
 
-| Feature | Description |
-| --- | --- |
-| **Confidence Scoring** | Each extracted belief gets a confidence score (0.0–1.0) based on linguistic markers: "definitely" (0.9), "probably" (0.7), "might" (0.4), "not sure" (0.3). |
-| **Belief Type Classification** | Four types: causal (why), assumption (what's taken as given), intention (what the agent will do), evidence (what was cited). Color-coded in dashboard. |
-| **Root-Cause Backtracking** | When a failure occurs (error, wrong output, user correction), trace back through the belief DAG to the exact belief that caused the wrong action. |
-| **Observability Integration** | Belief data exports as structured JSON - feed into Langfuse, Arize, Braintrust, or any OpenTelemetry-compatible tool as span metadata. |
-| **Zero-Code Integration** | Change `base_url`. That's it. No SDK, no imports, no code changes. The agent runs normally while Axion observes in the background. |
+- **OpenAI-compatible proxy.** `POST /v1/chat/completions`, streaming and non-streaming.
+- **Anthropic Messages proxy.** `POST /v1/messages`, streaming and non-streaming.
+- **Passthrough auth.** Forward the caller's `Authorization` or `x-api-key`. Fall back to the `UPSTREAM_API_KEY` secret only when it is set. Otherwise return 401. No `Bearer undefined` is ever sent upstream.
+- **Zero-latency observe path.** The response body is tee'd with `ReadableStream.tee()`. One branch streams to the caller untouched; the other accumulates text for extraction in `waitUntil()` after delivery.
+- **Belief extraction.** Regex patterns pull causal/assumption/intention/evidence fragments. Confidence starts at a per-pattern baseline and is nudged by additive markers, clamped to `[0.1, 1.0]`. Every belief is stamped with the session id.
+- **Durable session store.** A Durable Object appends each response's beliefs as a batch to Durable Object storage. `GET /api/beliefs/:sessionId` returns a flat chronological `ExtractedBelief[]`.
+- **Local dashboard.** Paste or link a session id, see its timeline. Filter by type, minimum confidence, or low-confidence only.
+- **PolyVerdict enforce mode (opt-in).** Send a JSON Schema and the Worker validates, coerces types, and retries the model up to 3 times before returning. Off by default.
+- **Tests and CI.** Vitest suite, `npm test` / `npm run check`, GitHub Actions on push and PR.
+
+## What is not built
+
+These appear in older drafts and in the roadmap. None of them are in the code:
+
+- Belief DAG, parent/child edges, root-cause backtracking. The store is a flat timeline. `BeliefNode`/`BeliefDAG` types exist but are marked `@planned` and have no runtime.
+- `/api/sessions` session registry. The dashboard takes a pasted session id instead.
+- Axion Loop (loop detection) and Axion Gate (tool-call blocking).
+- Semantic PolyVerdict, second-model verification, hallucination checks.
+- Schema registry Durable Object, schema hash cache.
+- Hosted multi-session SaaS dashboard.
 
 ---
 
-## The Three Layers
+## The three layers
 
-| Layer | Name | Phase | What it does |
+| Layer | Name | Status | What it does |
 | :---: | --- | :---: | --- |
-| 1 | **Axion Lens** | Shipping | Belief inspection - extracts the agent's reasoning chain, assumptions, and confidence from each response. Builds a belief DAG across the session. |
-| 2 | **Axion Loop** | Planned | Revision loop breaker - embeds agent outputs, detects when an agent is stuck cycling the same reasoning, intervenes with targeted feedback instead of a crude kill signal. |
-| 3 | **Axion Gate** | Planned | Runtime verification - intercepts tool calls before execution, checks plan alignment, contradiction, and failure patterns, then blocks or allows. |
+| 1 | **Axion Lens** | Shipping (observe) | Extracts reasoning fragments from each response into a per-session timeline. Read-only. |
+| 2 | **Axion Loop** | Planned | Detect when an agent is cycling the same reasoning and intervene with feedback. Not implemented. |
+| 3 | **Axion Gate** | Planned | Verify tool calls before execution and block bad ones. Not implemented. |
 
-> Lens is read-only and cannot break anything. It ships first and powers the other two: Loop uses the belief graph to classify loops, Gate uses the belief graph plus the stated plan to verify actions.
+Lens is read-only and cannot change agent behaviour. PolyVerdict enforce mode is a separate opt-in path that does change output (it can retry the model and coerce types), triggered only when the caller supplies a schema.
 
 ---
 
 ## Architecture
 
 ```
-Phase 1 (Lens): Observe
+Agent (OpenAI- or Anthropic-compatible, sends x-axion-session)
+  |
+  v
+Axion Worker (Cloudflare)
+  |- auth.ts       resolve passthrough / server-key credentials, or 401
+  |- providers/    match POST /v1/chat/completions or POST /v1/messages
+  |- stream.ts     ReadableStream.tee: caller branch + extraction branch
+  |- content.ts    normalize SSE deltas / non-stream body to assistant text
+  |- extraction.ts waitUntil -> extractBeliefs({ sessionId }) -> DO
+  |- polyverdict/  opt-in enforce: validate + coerce + retry <=3
+  |
+  v
+Model API (UPSTREAM_API_URL, default https://api.openai.com)
 
-  Agent
-    ↕ HTTP
-  Axion Proxy (CF Worker)
-    ├── stream.ts        → SSE passthrough, zero added latency
-    ├── extract.ts       → belief extraction (regex + NLP, <1ms)
-    └── SessionDurableObject → belief DAG in memory
-    ↕
-  Model API
-
-Phase 2 (Loop): Detect          Phase 3 (Gate): Block
-  [planned]                       [planned]
+State: SessionDurableObject appends belief batches to DO storage.
+Read:  GET /api/beliefs/:sessionId -> { sessionId, beliefs: ExtractedBelief[] }
+UI:    GET /dashboard
 ```
 
 ---
 
-## Quick Start
+## Quick start
 
-Requires Node.js and a Cloudflare account.
+Requires Node.js 20+ and a Cloudflare account for deploy.
 
 ```bash
-# Clone
-git clone https://github.com/LatticeAG/Axion.git
-cd axion
-
-# Install
 npm install
-
-# Run locally
+cp .dev.vars.example .dev.vars   # optional: set UPSTREAM_API_KEY
 npm run dev
-# → http://localhost:8787
-
-# Point any agent at Axion
-export ANTHROPIC_BASE_URL=http://localhost:8787
 export OPENAI_BASE_URL=http://localhost:8787
+# send header  x-axion-session: my-session  on your agent's requests
+# dashboard:   http://localhost:8787/dashboard?session=my-session
+npm run check
+```
 
-# Open the dashboard
-# → http://localhost:8787/dashboard
+The proxy uses passthrough auth. If your agent already sends its own API key, you do not need `UPSTREAM_API_KEY`. Set it only if you want the Worker to hold the key and let callers omit it.
+
+Anthropic agents route through `POST /v1/messages`:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8787
+# Claude Code and other Anthropic Messages clients hit POST /v1/messages
 ```
 
 Deploy your own instance:
 
 ```bash
 npx wrangler deploy
-# → https://your-axion-worker.dev
+# -> https://your-axion-worker.dev
 ```
 
 ---
 
-## Integration
+## Sessions and the dashboard
 
-Axion works with any agent that supports `base_url` override. Zero code changes - set the environment variable and the agent runs normally.
+Beliefs are grouped by session. Send `x-axion-session: <id>` on agent requests to correlate a multi-turn run. If the header is absent the Worker generates a UUID per request and returns it in the `x-axion-session` response header, so a single call is still captured but multi-turn correlation needs the header.
+
+Open `http://localhost:8787/dashboard`, paste the session id, and press Load. The id also reads from `?session=` in the URL and from `localStorage` (`axion.sessionId`).
+
+The beliefs API is unauthenticated in Phase 1. Anyone with a session id can read that session's beliefs. Treat the id like a capability token. See [SECURITY.md](./SECURITY.md).
+
+---
+
+## PolyVerdict enforce mode
+
+Enforce mode is off unless the request carries a schema. Two triggers:
+
+- Header `x-axion-schema: <JSON Schema as JSON>` (URL-decoded if needed), or
+- Body `response_format: { "type": "json_schema", "json_schema": { "schema": { ... } } }`.
+
+When triggered, the Worker forces a non-streaming upstream call, parses the assistant JSON (stripping Markdown fences), validates it against the schema, and coerces primitive types (`"42"` to number, `"true"`/`"false"` to boolean, number to string). On a violation it appends the errors as a correction message and retries, up to 3 attempts total. On success it returns a provider-shaped JSON response. After 3 failed attempts it returns HTTP 422 with the violations. Lens still extracts from the delivered text.
+
+The schema subset covers `type`, `properties`, `required`, `items`, `enum`, and nesting. Unknown keywords are ignored. There is no semantic or second-model verification.
+
+Example (OpenAI path):
 
 ```bash
-# Claude Code
-export ANTHROPIC_BASE_URL=https://your-axion-worker.dev
-
-# Codex / OpenAI-compatible agents
-export OPENAI_BASE_URL=https://your-axion-worker.dev
+curl http://localhost:8787/v1/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "x-axion-schema: {\"type\":\"object\",\"properties\":{\"score\":{\"type\":\"number\"}},\"required\":[\"score\"]}" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Rate this 1-10 as JSON."}]}'
 ```
-
-```yaml
-# Hermes - config.yaml
-providers:
-  anthropic:
-    base_url: https://your-axion-worker.dev
-```
-
-```
-# Cursor
-# Settings → Models → set "Custom API base URL"
-# → https://your-axion-worker.dev
-```
-
-Axion observes in the background. The agent behaves exactly as before - except every decision now has a visible, traceable belief behind it.
 
 ---
 
-## Belief Extraction Patterns
+## Belief extraction
 
-| Type | Pattern Examples | Confidence |
+| Type | Trigger phrases | Baseline confidence |
 | --- | --- | --- |
-| **Causal** | "because X", "since X", "due to X", "as a result of X" | 0.6–0.9 |
-| **Assumption** | "assuming X", "I'll assume X", "presumably X", "if X then Y" | 0.3–0.7 |
-| **Intention** | "I'll do X", "I'm going to X", "let me X", "I should X" | 0.5–0.8 |
-| **Evidence** | "based on X", "from the X", "according to X", "the error says X" | 0.6–0.9 |
+| Causal | "because X", "because of X", "since X", "due to X", "as a result of X" | 0.8 to 0.85 |
+| Assumption | "assuming X", "presumably X", "I'll assume X", "if X then Y" | 0.6 to 0.65 |
+| Intention | "I'll X", "I'm going to X", "let me X", "I should X", "I plan/intend to X" | 0.75 |
+| Evidence | "based on X", "according to X", "from the X", "the error says X" | 0.7 to 0.85 |
 
-Confidence modifiers: "definitely" (+0.2), "certainly" (+0.2), "probably" (+0.1), "might" (−0.2), "could be" (−0.1), "not sure" (−0.3).
+Confidence starts at the baseline and each marker found near the match adds its delta:
 
----
+- definitely / certainly / absolutely: +0.2
+- probably / likely: +0.1
+- might / could be / possibly / may: -0.2
+- not sure / uncertain / unsure: -0.3
 
-## Roadmap
-
-| Phase | Layer | Status | Ships |
-| :---: | --- | :---: | --- |
-| 1 | **Axion Lens** | In Progress | Proxy + belief extraction + local dashboard |
-| 2 | **Axion Loop** | Planned | Embedding detection + intervention injection |
-| 3 | **Axion Gate** | Planned | Tool-call interception + verification + blocking |
-
-**Phase 1 open-source scope:** the proxy, the belief extraction engine, session state, and a local single-session dashboard. A hosted multi-session SaaS dashboard (cross-session analysis, team sharing, alerting, community pattern library) comes later.
+The result is clamped to `[0.1, 1.0]`. This is a linguistic heuristic, not a truth signal. It reflects how the model hedged, nothing more.
 
 ---
 
-## File Structure
+## File structure
 
 ```
 axion/
-├── src/
-│   ├── proxy/                    CF Worker: stream proxy + interception
-│   │   ├── index.ts              Worker entry point + routing
-│   │   ├── stream.ts             SSE streaming + response teeing
-│   │   ├── routes.ts             API route handlers (/dashboard, /api/beliefs)
-│   │   ├── beliefs.ts            Belief storage coordination
-│   │   ├── extraction.ts         Triggers belief extraction via waitUntil()
-│   │   └── types.ts              Proxy-specific types
-│   ├── lens/                     Belief extraction engine
-│   │   ├── types.ts              ExtractedBelief, BeliefNode, BeliefDAG
-│   │   ├── patterns.ts           Regex pattern definitions
-│   │   ├── extract.ts            Main extraction function
-│   │   └── index.ts              Re-exports
-│   ├── state/                    Durable Object: session belief graph
-│   │   └── SessionDurableObject.ts
-│   └── dashboard/                React timeline UI
-│       ├── index.html
-│       ├── app.js
-│       └── styles.css
-├── SPEC.md                       Full architecture specification
-├── TECHNICAL.md                  Technical deep-dive
-├── wrangler.toml                 CF Worker config + DO bindings
-├── tsconfig.json
-└── package.json
+|- src/
+|  |- proxy/
+|  |  |- index.ts              Worker entry: routing, observe + enforce branches
+|  |  |- auth.ts               passthrough / server-key credential resolution
+|  |  |- stream.ts             ReadableStream.tee + SSE parsing (OpenAI + Anthropic)
+|  |  |- content.ts            assistant-text normalization per provider
+|  |  |- extraction.ts         waitUntil glue to extractBeliefs + DO store
+|  |  |- beliefs.ts            GET /api/beliefs/:id -> DO
+|  |  |- routes.ts             dashboard static asset handler
+|  |  |- providers/            openai + anthropic adapters, matcher, interface
+|  |  |- types.ts              Env + proxy request/response types
+|  |- lens/
+|  |  |- patterns.ts           regex belief patterns + confidence markers
+|  |  |- extract.ts            extraction engine (additive confidence, clamp)
+|  |  |- types.ts              ExtractedBelief; BeliefNode/BeliefDAG (@planned)
+|  |- polyverdict/
+|  |  |- schema.ts             JSON Schema subset validator + coercion
+|  |  |- enforce.ts            trigger detection, retry loop, hint injection
+|  |  |- types.ts              enforce types
+|  |- state/
+|  |  |- SessionDurableObject.ts   append batches, flatten on GET
+|  |  |- sessionBeliefs.ts         pure flatten / sessionId helpers
+|  |- dashboard/               React via CDN, no build step
+|- BUILD-SPEC.md               locked scope (source of truth)
+|- SPEC.md  TECHNICAL.md  SPEC-PolyVerdict.md  PLAN.md
+|- wrangler.toml  tsconfig.json  package.json
 ```
 
 ---
 
-## Tech Stack
+## Tech stack
 
-- **Runtime** - Cloudflare Workers (edge proxy, zero cold start, global)
-- **State** - Durable Objects (per-session belief graph, in memory)
-- **Extraction** - Rule-based parser (regex + lightweight NLP), no model dependency, <1ms
-- **Dashboard** - React (CDN, no build step), served from Worker static assets
-- **External dependencies** - Zero in the open-source core
+- **Runtime:** Cloudflare Workers.
+- **State:** Durable Objects, one per session, backed by Durable Object storage.
+- **Extraction:** regex rules only, no model call, sub-millisecond.
+- **Dashboard:** React from CDN, no bundler, served as static assets.
+- **Runtime dependencies:** none. `wrangler`, `typescript`, and `vitest` are dev-only.
 
 ---
 
-## Key Technical Details
+## Known issues
 
-- **Streaming:** Responses are streamed through via `ReadableStream` with a `TransformStream` tee - one stream goes to the caller, the other accumulates for belief extraction. Zero added latency on the hot path.
-- **Extraction timing:** Belief extraction runs in `waitUntil()` after the response stream completes. The agent never waits for extraction.
-- **Session isolation:** Each agent session gets its own Durable Object instance. Belief graphs are isolated per session, held in memory.
-- **Pattern engine:** Regex patterns are defined as an extensible array in `patterns.ts`. New belief types or confidence modifiers can be added without touching the extraction logic.
-- **Dashboard:** Uses React via CDN (no build step, no bundler). Served as static assets from the Worker. Dark theme, monospace, LatticeAG brand.
+- Loop (Phase 2) and Gate (Phase 3) are not implemented.
+- The beliefs API is unauthenticated. A session id is a read capability. See [SECURITY.md](./SECURITY.md).
+- Session storage is unbounded. Beliefs append to Durable Object storage and are never trimmed. Long-lived session ids will grow without limit. There is no rate limiting yet.
+- Extraction is a regex heuristic. It misses reasoning that does not use the trigger phrases and will mis-parse unusual phrasing. Confidence reflects hedging words, not correctness.
+- Without an `x-axion-session` header each request lands under a fresh UUID, so multi-turn correlation depends on the caller sending a stable id.
+- The dashboard loads React from a CDN and needs internet access for that page. The proxy itself does not.
+- Enforce mode always returns non-streaming JSON, even if the client asked to stream. This is intentional so the full payload can be validated.
 
 ---
 
 ## Links
 
-- **Product page:** [latticeag.vercel.app/products/axion](https://latticeag.vercel.app/products/axion)
-- **Source code:** [github.com/LatticeAG/Axion](https://github.com/LatticeAG/Axion)
+- **Source:** [github.com/LatticeAG/Axion](https://github.com/LatticeAG/Axion)
 - **LatticeAG:** [latticeag.vercel.app](https://latticeag.vercel.app)
-
-## Known Issues
-
-- Phase 2 (Axion Loop) and Phase 3 (Axion Gate) are not yet implemented
-- Dashboard uses CDN-hosted React - requires internet access for the dashboard page only (proxy works offline)
-- Durable Object belief graph is in-memory - sessions are lost on DO eviction (acceptable for Phase 1)
-
----
 
 ## License
 
-MIT - see [LICENSE](./LICENSE).
+MIT. See [LICENSE](./LICENSE).
 
 ---
 
 <div align="center">
 
-**LatticeAG** - *Agents, together.*
-
-[github.com/LatticeAG/Axion](https://github.com/LatticeAG/Axion)
+**LatticeAG** - Agents, together.
 
 </div>
