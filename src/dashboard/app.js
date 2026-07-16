@@ -33,7 +33,8 @@ function Stat({ value, label }) {
 }
 
 function BeliefCard({ belief }) {
-  const level = confidenceLevel(belief.confidence);
+  const hasConfidence = typeof belief.confidence === 'number';
+  const level = hasConfidence ? confidenceLevel(belief.confidence) : null;
   return React.createElement('div', {
     className: 'belief-card',
     'data-type': belief.type,
@@ -42,7 +43,7 @@ function BeliefCard({ belief }) {
       React.createElement('span', {
         className: 'belief-type-badge',
         'data-type': belief.type,
-      }, TYPE_LABELS[belief.type]),
+      }, TYPE_LABELS[belief.type] || belief.type),
       React.createElement('span', { className: 'belief-timestamp' }, formatTime(belief.timestamp))
     ),
     React.createElement('div', { className: 'belief-text' }, belief.belief),
@@ -55,7 +56,7 @@ function BeliefCard({ belief }) {
         React.createElement('span', { className: 'belief-meta-label' }, 'Action: '),
         belief.actionTaken
       ),
-      React.createElement('div', { className: 'confidence-bar' },
+      hasConfidence && React.createElement('div', { className: 'confidence-bar' },
         React.createElement('div', { className: 'confidence-track' },
           React.createElement('div', {
             className: 'confidence-fill',
@@ -69,26 +70,44 @@ function BeliefCard({ belief }) {
   );
 }
 
+const SESSION_STORAGE_KEY = 'axion.sessionId';
+
+function readStoredSession() {
+  try {
+    return localStorage.getItem(SESSION_STORAGE_KEY) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function persistSession(sessionId) {
+  try {
+    if (sessionId) localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+  } catch (e) {
+    /* localStorage unavailable (private mode) - non-fatal */
+  }
+}
+
+function initialSessionId() {
+  const fromUrl = new URLSearchParams(window.location.search).get('session');
+  if (fromUrl && fromUrl.trim()) return fromUrl.trim();
+  return readStoredSession();
+}
+
 function App() {
   const [beliefs, setBeliefs] = useState([]);
-  const [sessions, setSessions] = useState([]);
-  const [selectedSession, setSelectedSession] = useState('');
+  const [sessionInput, setSessionInput] = useState('');
+  const [activeSession, setActiveSession] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [minConfidence, setMinConfidence] = useState(0);
-  const [wrongOnly, setWrongOnly] = useState(false);
+  const [lowConfidenceOnly, setLowConfidenceOnly] = useState(false);
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    fetch('/api/sessions')
-      .then(r => r.json())
-      .then(data => setSessions(data.sessions || []))
-      .catch(() => {});
-  }, []);
 
   const loadBeliefs = useCallback((sessionId) => {
     if (!sessionId) return;
+    setActiveSession(sessionId);
     setLoading(true);
-    fetch(`/api/beliefs/${sessionId}`)
+    fetch(`/api/beliefs/${encodeURIComponent(sessionId)}`)
       .then(r => r.json())
       .then(data => {
         setBeliefs(data.beliefs || []);
@@ -97,19 +116,33 @@ function App() {
       .catch(() => setLoading(false));
   }, []);
 
+  const handleLoad = useCallback(() => {
+    const sessionId = sessionInput.trim();
+    if (!sessionId) return;
+    persistSession(sessionId);
+    loadBeliefs(sessionId);
+  }, [sessionInput, loadBeliefs]);
+
   useEffect(() => {
-    if (selectedSession) loadBeliefs(selectedSession);
-  }, [selectedSession, loadBeliefs]);
+    const initial = initialSessionId();
+    if (initial) {
+      setSessionInput(initial);
+      persistSession(initial);
+      loadBeliefs(initial);
+    }
+  }, [loadBeliefs]);
 
   const filtered = beliefs.filter(b => {
     if (filterType !== 'all' && b.type !== filterType) return false;
-    if (b.confidence < minConfidence) return false;
-    if (wrongOnly && b.confidence >= 0.4) return false;
+    const hasConfidence = typeof b.confidence === 'number';
+    if (hasConfidence && b.confidence < minConfidence) return false;
+    if (lowConfidenceOnly && !(hasConfidence && b.confidence < 0.4)) return false;
     return true;
   });
 
-  const avgConfidence = beliefs.length > 0
-    ? (beliefs.reduce((s, b) => s + b.confidence, 0) / beliefs.length).toFixed(2)
+  const scored = beliefs.filter(b => typeof b.confidence === 'number');
+  const avgConfidence = scored.length > 0
+    ? (scored.reduce((s, b) => s + b.confidence, 0) / scored.length).toFixed(2)
     : '-';
 
   const typeCounts = beliefs.reduce((acc, b) => {
@@ -126,13 +159,24 @@ function App() {
     ),
     // Session selector
     React.createElement('div', { className: 'session-selector' },
-      React.createElement('select', {
-        className: 'filter-select',
-        value: selectedSession,
-        onChange: e => setSelectedSession(e.target.value),
+      React.createElement('form', {
+        className: 'session-form',
+        onSubmit: e => { e.preventDefault(); handleLoad(); },
       },
-        React.createElement('option', { value: '' }, '- Select Session -'),
-        ...sessions.map(s => React.createElement('option', { key: s, value: s }, s))
+        React.createElement('input', {
+          type: 'text',
+          className: 'filter-input session-input',
+          placeholder: 'Paste session id (x-axion-session)',
+          value: sessionInput,
+          spellCheck: false,
+          autoComplete: 'off',
+          onChange: e => setSessionInput(e.target.value),
+        }),
+        React.createElement('button', {
+          type: 'submit',
+          className: 'session-load-btn',
+          disabled: !sessionInput.trim(),
+        }, 'Load')
       )
     ),
     // Stats
@@ -177,10 +221,10 @@ function App() {
       React.createElement('label', { className: 'filter-toggle' },
         React.createElement('input', {
           type: 'checkbox',
-          checked: wrongOnly,
-          onChange: e => setWrongOnly(e.target.checked),
+          checked: lowConfidenceOnly,
+          onChange: e => setLowConfidenceOnly(e.target.checked),
         }),
-        'Wrong beliefs only'
+        'Low confidence only'
       ),
     ),
     // Timeline
