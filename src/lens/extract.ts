@@ -14,6 +14,8 @@ import type { BeliefType, ExtractedBelief, PatternMatch } from './types.js';
 import {
   BELIEF_PATTERNS,
   CONFIDENCE_MARKERS,
+  CONFIDENCE_MAX,
+  CONFIDENCE_MIN,
   DEFAULT_CONFIDENCE,
   MARKER_SCAN_RADIUS,
 } from './patterns.js';
@@ -143,18 +145,18 @@ function surroundingContext(text: string, start: number, length: number): string
 }
 
 /**
- * Adjust a pattern's baseline confidence toward the strongest marker band
- * found in the surrounding context. The strongest marker (first in
- * `CONFIDENCE_MARKERS`, which is ordered by descending strength) wins.
+ * Adjust a pattern's baseline confidence by summing the additive `delta` of
+ * every distinct confidence-marker category found in the surrounding context,
+ * then clamping to [CONFIDENCE_MIN, CONFIDENCE_MAX].
  */
 function adjustConfidence(baseline: number, context: string): number {
+  let confidence = baseline;
   for (const marker of CONFIDENCE_MARKERS) {
     if (marker.pattern.test(context)) {
-      // Interpolate baseline halfway toward the marker's target band.
-      return clamp01((baseline + marker.confidence) / 2);
+      confidence += marker.delta;
     }
   }
-  return clamp01(baseline);
+  return clampConfidence(confidence);
 }
 
 /** Return the `pattern` with the `g` flag added (idempotent). */
@@ -172,9 +174,9 @@ function lineNumberAt(text: string, offset: number): number {
   return line;
 }
 
-function clamp01(n: number): number {
-  if (Number.isNaN(n)) return 0;
-  return Math.min(1, Math.max(0, n));
+function clampConfidence(n: number): number {
+  if (Number.isNaN(n)) return CONFIDENCE_MIN;
+  return Math.min(CONFIDENCE_MAX, Math.max(CONFIDENCE_MIN, n));
 }
 
 /** Fallback session id when none is supplied. */

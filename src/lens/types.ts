@@ -13,13 +13,16 @@
 /** The kind of reasoning fragment that was detected. */
 export type BeliefType = 'causal' | 'assumption' | 'intention' | 'evidence';
 
-/** Confidence markers map onto a numeric band. See `patterns.ts` for the bands. */
+/**
+ * Confidence markers apply an additive delta to the pattern baseline, clamped
+ * to [0.1, 1.0]. See `patterns.ts` for the exact word lists / deltas.
+ */
 export type ConfidenceMarker =
-  | 'certain' // definitely, certainly, absolutely  → ~1.0
-  | 'likely' // probably, likely, almost certainly → ~0.85
-  | 'possible' // might, could be, may             → ~0.6
-  | 'uncertain' // not sure, unclear, unsure       → ~0.35
-  | 'none'; // no marker detected                  → 0.7 default
+  | 'certain' // definitely, certainly, absolutely  → +0.2
+  | 'likely' // probably, likely                    → +0.1
+  | 'possible' // might, could be, possibly         → -0.2
+  | 'uncertain' // not sure, uncertain, unsure      → -0.3
+  | 'none'; // no marker detected                   → baseline (0.7 default)
 
 /**
  * A single belief extracted from one model response.
@@ -36,7 +39,7 @@ export interface ExtractedBelief {
   belief: string;
   /** Cited evidence, if any (e.g. "the error message"). */
   evidence?: string;
-  /** Confidence score in [0,1]. Derived from confidence markers. */
+  /** Confidence score in [0.1, 1.0]. Baseline adjusted by confidence markers. */
   confidence: number;
   /** If an action was stated alongside the belief, the action text. */
   actionTaken?: string;
