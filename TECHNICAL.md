@@ -2,6 +2,7 @@
 
 > How the Worker actually behaves, matched to the code in `src/`.
 > High-level overview: [README.md](./README.md). Locked scope: [BUILD-SPEC.md](./BUILD-SPEC.md).
+> **Full normative specification: [SPEC.md](./SPEC.md).** This file is a code-oriented companion; where the two differ, SPEC.md wins.
 
 This document describes what is implemented. Planned layers (Loop, Gate, belief graph, semantic PolyVerdict) are called out as planned and have no runtime.
 

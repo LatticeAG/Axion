@@ -25,7 +25,7 @@ Named after the axion particle: theorized to exist, never directly observed, det
 Agent  <->  Axion (CF Worker)  <->  Model API
 ```
 
-> **Honest scope.** This repo is the Phase 1 observe path plus an opt-in schema enforce mode. It does not detect loops, block tool calls, or build a belief graph. See [What is not built](#what-is-not-built) before you form expectations. The full product plan lives in [BUILD-SPEC.md](./BUILD-SPEC.md), which is the source of truth for scope.
+> **Honest scope.** This repo is the Phase 1 observe path plus an opt-in schema enforce mode. It does not detect loops, block tool calls, or build a belief graph. See [What is not built](#what-is-not-built) before you form expectations. The complete behavioral specification lives in [SPEC.md](./SPEC.md); locked product decisions in [BUILD-SPEC.md](./BUILD-SPEC.md).
 
 ---
 
