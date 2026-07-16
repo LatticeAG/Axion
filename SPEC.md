@@ -1,6 +1,6 @@
 # Axion — Full System Specification
 
-> **Version:** 1.0.0 (spec), describing Axion Worker `0.1.0`
+> **Version:** 1.1.0 (spec), describing Axion Worker `0.1.0` and the v0.2 hardening target
 > **Status:** Normative for everything marked *Shipped*. Sections marked *Planned* are design targets, not implemented behavior.
 > **Audience:** contributors, integrators, and agents implementing or verifying Axion.
 > **Product decision record:** [BUILD-SPEC.md](./BUILD-SPEC.md) holds the locked product decisions (D1–D8). This document is the complete behavioral specification and is consistent with them. Where a conflict is ever found, BUILD-SPEC's decisions win and this document must be corrected.
@@ -37,9 +37,11 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** ar
 24. [Testing and CI](#24-testing-and-ci)
 25. [Compatibility and versioning](#25-compatibility-and-versioning)
 26. [Planned layers (not implemented)](#26-planned-layers-not-implemented)
-27. [Appendix A: header reference](#27-appendix-a-header-reference)
-28. [Appendix B: worked examples](#28-appendix-b-worked-examples)
-29. [Document history](#29-document-history)
+27. [Production hardening — v0.2 specification (not built)](#27-production-hardening--v02-specification-not-built)
+28. [Appendix A: header reference](#28-appendix-a-header-reference)
+29. [Appendix B: worked examples](#29-appendix-b-worked-examples)
+30. [Appendix C: system invariants (conformance checklist)](#30-appendix-c-system-invariants-conformance-checklist)
+31. [Document history](#31-document-history)
 
 ---
 
@@ -101,6 +103,8 @@ Per BUILD-SPEC non-goals, all of these are explicitly out of scope for the curre
 - Schema registry Durable Object; schema+prompt hash cache.
 - Hosted multi-session SaaS dashboard, cross-session analysis, team sharing, alerting.
 - Rate limiting (documented as future work in [SECURITY.md](./SECURITY.md)).
+
+These non-goals bind the **current build**. Several have fully specified designs for the next milestone in [§27](#27-production-hardening--v02-specification-not-built) (rate limiting, beliefs-API auth, retention); the product layers of [§26](#26-planned-layers-not-implemented) (Loop, Gate, graph, semantic PolyVerdict) remain design sketches.
 
 ---
 
@@ -1048,11 +1052,11 @@ Axion Phase 1 is built for **local/single-operator deployments**. It intentional
 
 | Asset | Threat | Phase 1 stance |
 |---|---|---|
-| Belief data | Anyone with a session id can read it — `GET /api/beliefs/:id` has **no auth** and permissive CORS | The session id is a **capability URL**. Use unguessable ids; don't paste them into public places. Empty and nonexistent sessions are indistinguishable (no existence oracle). |
+| Belief data | Anyone with a session id can read it — `GET /api/beliefs/:id` has **no auth** and permissive CORS | The session id is a **capability URL**. Use unguessable ids; don't paste them into public places. Empty and nonexistent sessions are indistinguishable (no existence oracle). Remediation specified: read key ([§27.2](#272-beliefs-read-api-authentication)) + CORS allowlist ([§27.11](#2711-cors-policy)). |
 | Upstream API keys | Leakage via the proxy | Keys are forwarded upstream only, never logged, stored, or echoed. `Bearer undefined` is impossible (G6). |
-| `UPSTREAM_API_KEY` deployments | Open relay: anyone who can reach the Worker can spend the key | Documented; operators MUST restrict reachability when setting the server key. |
-| Worker availability / cost | No rate limiting on any endpoint | Known gap, future work ([SECURITY.md](./SECURITY.md)). |
-| Storage | Unbounded per-session growth | Known gap ([§14.4](#144-known-limitation--unbounded-growth), [§22.1](#221-storage-growth)). |
+| `UPSTREAM_API_KEY` deployments | Open relay: anyone who can reach the Worker can spend the key | Documented; operators MUST restrict reachability when setting the server key. Remediation specified: proxy access keys ([§27.3](#273-proxy-access-control)). |
+| Worker availability / cost | No rate limiting on any endpoint | Known gap, future work ([SECURITY.md](./SECURITY.md)). Remediation specified: [§27.4](#274-rate-limiting), request limits [§27.15](#2715-request-limits). |
+| Storage | Unbounded per-session growth | Known gap ([§14.4](#144-known-limitation--unbounded-growth), [§22.1](#221-storage-growth)). Remediation specified: retention + TTL ([§27.5](#275-storage-layout-v2--retention-and-quotas)). |
 | Prompt/response content | Raw assistant text is persisted per batch (`rawText`) | Disclosed: belief storage includes response text. Session data lives in the operator's own Cloudflare account. |
 | Dashboard supply chain | React loaded from `unpkg.com` CDN | Disclosed; the proxy itself has zero runtime dependencies and no CDN exposure. |
 
@@ -1104,8 +1108,8 @@ Beliefs append forever; nothing trims, expires, or compacts ([§14.4](#144-known
 - **Session correlation is opt-in:** without `x-axion-session`, each request lands under a fresh UUID.
 - **Enforce ignores client streaming:** enforce responses are always non-streaming JSON.
 - **Extraction is heuristic:** see [§12.6](#126-accuracy-caveats-normative-disclosure).
-- **Dashboard needs the internet** for the React CDN; the proxy does not.
-- **No rate limiting** anywhere.
+- **Dashboard needs the internet** for the React CDN; the proxy does not. (Offline vendoring specified in [§27.13](#2713-dashboard-v2).)
+- **No rate limiting** anywhere. (Specified in [§27.4](#274-rate-limiting).)
 - **Tool-call and non-text content is invisible** to the lens in Phase 1 (text deltas only).
 
 ---
@@ -1115,7 +1119,7 @@ Beliefs append forever; nothing trims, expires, or compacts ([§14.4](#144-known
 Phase 1 observability is Cloudflare-native:
 
 - **Logging:** `console.error` on swallowed failures, all prefixed `axion:` — `belief extraction failed`, `failed to store beliefs in DO` (with DO status and body), `DO store threw`. Viewable via `wrangler tail` / the dashboard. No key material is ever logged.
-- **No metrics endpoint, no tracing, no structured log schema** in Phase 1.
+- **No metrics endpoint, no tracing, no structured log schema** in Phase 1. The structured log-event schema, metrics datapoints, and export sinks for the next milestone are specified in [§27.9](#279-structured-logging-and-metrics)–[§27.10](#2710-export-integrations).
 - The `x-axion-session` response header doubles as the correlation handle between an agent run and its stored data.
 
 ---
@@ -1149,6 +1153,7 @@ GitHub Actions (`.github/workflows/ci.yml`): on every PR and push to `main`, Nod
 - **Additive changes** (new optional fields, new routes, new patterns) MAY ship in minor versions. Renaming/removing fields, changing confidence semantics, or changing route behavior are breaking and require a major version and a spec update.
 - **Internal surface** (no stability promise): DO internal routes and storage schema, module layout, pattern regex internals, dashboard markup.
 - The `@planned` graph types are explicitly not API; they may change or disappear without notice.
+- **v0.2 target:** the production-hardening features in [§27](#27-production-hardening--v02-specification-not-built) are the contract for the next minor version. They are governed by rules R1–R5 there: default-off, additive-only, and invariant-preserving ([Appendix C](#30-appendix-c-system-invariants-conformance-checklist)).
 
 ---
 
@@ -1205,9 +1210,264 @@ Multi-session dashboard, cross-session analysis, team sharing/alerting, communit
 
 ---
 
-## 27. Appendix A: header reference
+## 27. Production hardening — v0.2 specification (not built)
 
-### 27.1 Request headers read by Axion
+This section is the complete specification for the **v0.2 production-readiness milestone**. Unlike [§26](#26-planned-layers-not-implemented) (product layers whose designs are still sketches), everything here is specified to implementation precision and becomes **normative when built**. Nothing in this section is implemented today; implementing any subsection requires bumping the Worker version and moving that subsection's status marker to *Shipped*.
+
+Governing rules for the whole section:
+
+- **R1 — Default off.** Every feature activates only via explicit configuration (a new env var/secret or a new request header). A v0.1 deployment upgraded to v0.2 with an unchanged configuration MUST behave byte-for-byte identically on every existing route.
+- **R2 — Additive only.** New response fields, headers, and routes only. No existing field, shape, or status code changes ([§25](#25-compatibility-and-versioning)).
+- **R3 — Phase 1 invariants hold.** The observe-path zero-buffering guarantee (G2), never-break-the-proxy (G3), fail-closed auth (G6), and honest scope (G7) apply unchanged to every feature below. Where a v0.2 feature could conflict with an invariant, the invariant wins and the conflict is called out inline.
+- **R4 — Fail-open on infrastructure, fail-closed on auth.** Availability features (rate limiting, metrics, webhooks) degrade to "feature off" when their infrastructure errors. Access-control features (read key, proxy key, admin key) never degrade: a configured key that cannot be verified is a rejection.
+- **R5 — Invalid configuration never breaks requests.** A malformed value in any `AXION_*` var is treated as unset: the feature stays off and one `config.invalid` log event is emitted per isolate ([§27.9](#279-structured-logging-and-metrics)). Exception: secrets used for auth (R4) are compared as opaque strings and cannot be "malformed".
+
+### 27.1 Configuration surface (v0.2)
+
+All new bindings are optional. Absence reproduces v0.1 behavior exactly (R1).
+
+| Name | Kind | Format / default when set | Enables |
+|---|---|---|---|
+| `AXION_READ_KEY` | secret | opaque string | beliefs-API authentication ([§27.2](#272-beliefs-read-api-authentication)) |
+| `AXION_ADMIN_KEY` | secret | opaque string | session administration ([§27.7](#277-session-administration)) |
+| `AXION_PROXY_KEYS` | secret | comma-separated opaque tokens | proxy access control ([§27.3](#273-proxy-access-control)) |
+| `AXION_RATE_LIMIT` | var | `<n>/<sec\|min\|hour>` e.g. `120/min` | rate limiting ([§27.4](#274-rate-limiting)) |
+| `AXION_MAX_BATCHES_PER_SESSION` | var | positive integer, default `200` | retention cap ([§27.5](#275-storage-layout-v2--retention-and-quotas)) |
+| `AXION_SESSION_TTL_DAYS` | var | positive integer, default `30` | session expiry ([§27.5](#275-storage-layout-v2--retention-and-quotas)) |
+| `AXION_STORE_RAW_TEXT` | var | `true`/`false`, default `true` | response-text privacy control ([§27.5.5](#2755-privacy-controls)) |
+| `AXION_MAX_BODY_BYTES` | var | positive integer, default `1048576` | request size limit ([§27.15](#2715-request-limits)) |
+| `AXION_ENFORCE_TIMEOUT_MS` | var | positive integer, default `60000` | per-attempt enforce timeout ([§27.14](#2714-enforce-hardening)) |
+| `AXION_ALLOWED_ORIGINS` | var | `*` or comma-separated origins, default `*` | CORS restriction ([§27.11](#2711-cors-policy)) |
+| `AXION_WEBHOOK_URL` | var | absolute `https:` URL | belief export webhook ([§27.10](#2710-export-integrations)) |
+| `AXION_WEBHOOK_SECRET` | secret | opaque string | webhook HMAC signing ([§27.10](#2710-export-integrations)) |
+| `AXION_LOG_LEVEL` | var | `error`/`warn`/`info`/`debug`, default `warn` | structured logging verbosity ([§27.9](#279-structured-logging-and-metrics)) |
+| `AXION_METRICS` | Analytics Engine binding | — | metrics datapoints ([§27.9](#279-structured-logging-and-metrics)) |
+| `RATE_LIMITER` | Durable Object namespace | — | rate-limiter state ([§27.4](#274-rate-limiting)) |
+
+### 27.2 Beliefs read API authentication
+
+**Status: specified, not built.** Closes the "unauthenticated beliefs API" gap in [§20.2](#202-threat-model).
+
+- **Activation:** `AXION_READ_KEY` set and non-empty after trim.
+- **Check:** every `GET /api/beliefs/:sessionId` (and the v0.2 `DELETE`, which uses the admin key instead) MUST present the key as either `Authorization: Bearer <key>` or `x-axion-read-key: <key>`. Comparison MUST be constant-time (compare fixed-length SHA-256 digests of both sides).
+- **Failure:** `401` `{ "error": { "message": "Provide the read key (Authorization: Bearer or x-axion-read-key)" } }`, with the CORS headers of [§27.11](#2711-cors-policy).
+- **Semantics:** the read key is a **deployment-wide** gate; the session id remains the per-session capability. Both are required. The read key is never forwarded upstream and never logged.
+- **Dashboard integration:** on a `401`, the dashboard prompts for a read key, stores it in `sessionStorage` under `axion.readKey` (session-scoped on purpose — less durable than the session id), and retries with `x-axion-read-key`. See [§27.13](#2713-dashboard-v2).
+
+### 27.3 Proxy access control
+
+**Status: specified, not built.** Closes the open-relay gap that exists when `UPSTREAM_API_KEY` is set ([§6.5](#65-credential-handling-rules)).
+
+- **Activation:** `AXION_PROXY_KEYS` set. Value is a comma-separated list of accepted tokens; entries are trimmed, empties dropped.
+- **Check:** every provider-route request MUST carry `x-axion-proxy-key: <token>` matching one entry (constant-time, per [§27.2](#272-beliefs-read-api-authentication)). The check runs **before** credential resolution ([§6](#6-authentication-and-credential-resolution)) so an unauthorized caller can never cause server-key spend.
+- **Failure:** `403` `{ "error": { "message": "Invalid or missing x-axion-proxy-key" } }`. No `x-axion-session` header (session not yet resolved).
+- The proxy key is orthogonal to upstream credentials: it answers "may you use this relay", not "who pays upstream". It is never forwarded upstream and never logged.
+
+### 27.4 Rate limiting
+
+**Status: specified, not built.** Named future work in [SECURITY.md](./SECURITY.md).
+
+- **Activation:** `AXION_RATE_LIMIT` parses as `<n>/<window>` where `n` ≥ 1 and window ∈ `sec` | `min` | `hour`. Anything else → feature off (R5).
+- **Scope:** provider routes and `/api/beliefs/*`. `/dashboard*`, `/healthz`, and `/` are exempt.
+- **Client identity** (first match wins): `x-axion-proxy-key` value → else SHA-256 of the caller credential (`Authorization` or `x-api-key`), first 16 hex chars → else `CF-Connecting-IP` → else the literal `"anonymous"`.
+- **Algorithm:** token bucket per identity. Capacity `n`; refill rate `n / window-seconds` tokens per second, computed lazily on each check from the elapsed time since the stored `lastRefill` (no timers). One request costs one token. State lives in a `RateLimiterDurableObject` (`RATE_LIMITER` binding, `idFromName(identity)`) storing `{ tokens: number, lastRefill: number }`.
+- **Check protocol:** the Worker POSTs `{"cost": 1}` to the limiter stub; the reply is `{ allowed: boolean, remaining: number, resetSeconds: number }`. Exactly one round trip per request, added **before** the upstream call (this is the only permitted latency addition, bounded by one DO hop; it does not violate G2, which governs the response path).
+- **Fail-open:** if the limiter DO errors or times out (250 ms budget), the request proceeds and a `ratelimit.error` event is logged (R4).
+- **Rejection:** `429` `{ "error": { "message": "Rate limit exceeded", "retry_after_seconds": <n> } }` with a `Retry-After` header.
+- **Headers on every limited route** (success and rejection): `x-axion-ratelimit-limit`, `x-axion-ratelimit-remaining`, `x-axion-ratelimit-reset` (seconds until full).
+
+### 27.5 Storage layout v2 — retention and quotas
+
+**Status: specified, not built.** Removes the single-key 128 KiB ceiling ([§14.4](#144-known-limitation--unbounded-growth), [§22.1](#221-storage-growth)).
+
+#### 27.5.1 Layout
+
+| Key | Type | Semantics |
+|---|---|---|
+| `meta` | `{ sessionName, batchCount, firstSeq, lastSeq, createdAt, updatedAt, v: 2 }` | session metadata, updated on every write |
+| `batch:<seq>` | `BeliefBatch & { id: string }` | one batch per key; `<seq>` is a zero-padded 10-digit monotonic integer so lexicographic key order equals arrival order; `id` is a UUID for downstream dedupe ([§27.10](#2710-export-integrations)) |
+
+#### 27.5.2 Write path
+
+Append = `put("batch:" + pad(lastSeq + 1), batch)` + `put("meta", updatedMeta)`, executed in one `storage.transaction` (atomic within the single-threaded DO). Each batch now has its own 128 KiB budget; an oversized *single* batch still fails and is swallowed per G3.
+
+#### 27.5.3 Retention
+
+- **Count cap:** after each write, while `batchCount > AXION_MAX_BATCHES_PER_SESSION`, delete `batch:<firstSeq>` and advance `firstSeq`. Oldest-first eviction; the flattened timeline silently loses its head, which MUST be disclosed in the read response via `"truncated": true` when `firstSeq > 1`.
+- **TTL:** every write re-arms a DO alarm at `updatedAt + AXION_SESSION_TTL_DAYS × 86400_000`. The alarm handler calls `storage.deleteAll()` — an idle session vanishes entirely (including `meta`) after the TTL. Reads do not re-arm.
+
+#### 27.5.4 Migration from v1
+
+Lazy, inside the DO, on first access by v2 code: if the legacy `"beliefs"` key exists, split it into `batch:<seq>` keys (seq from array order, starting at 1), synthesize `meta` (`createdAt = updatedAt = now`, batch `id`s freshly generated), delete `"beliefs"` and `"sessionName"` (name moves into `meta.sessionName`), all in one transaction. Idempotent: v2 keys present → no-op.
+
+#### 27.5.5 Privacy controls
+
+- **`AXION_STORE_RAW_TEXT=false`:** batches are stored with `rawText: ""`. The per-belief `rawText` (the matched span, [§13.1](#131-extractedbelief)) is retained — it is the audit trail for the belief itself; the flag drops the *full response text* only.
+- **`x-axion-no-store: true` request header:** the observe path skips extraction and storage entirely for that request (the tee still runs and is drained/cancelled; the session header is still echoed). Enforce mode honors it by skipping the Lens `waitUntil`. Use case: callers mixing sensitive turns into an otherwise-observed session.
+
+### 27.6 Read API v1.1 — pagination and filtering
+
+**Status: specified, not built.** Additive query parameters on `GET /api/beliefs/:sessionId`; a bare request returns exactly the v0.1 shape (R2), plus the optional fields below only when applicable.
+
+| Param | Type / constraints | Semantics |
+|---|---|---|
+| `limit` | integer 1–1000 | maximum beliefs returned; enables pagination |
+| `cursor` | opaque string | resume token from a previous response; MUST be treated as opaque by clients (format: base64url of `<seq>:<offsetInBatch>`) |
+| `since` | integer (Unix ms) | only beliefs with `timestamp >= since` |
+| `type` | comma-separated `BeliefType` list | only matching types |
+| `minConfidence` | number 0–1 | only beliefs with `confidence >=` value |
+
+Response additions: `"nextCursor": string` (present iff more results exist), `"truncated": true` (present iff retention evicted head batches, [§27.5.3](#2753-retention)). Invalid parameter values → `400` `{ "error": { "message": "Invalid query parameter: <name>" } }`. Filters apply before `limit`. Pagination iterates batches by key range (`storage.list({ prefix: "batch:", start })`) rather than flattening everything, so large sessions stay O(page).
+
+### 27.7 Session administration
+
+**Status: specified, not built.**
+
+- **`DELETE /api/beliefs/:sessionId`** — erase one session (all batches + meta, via the DO's `DELETE /beliefs` internal route → `deleteAll`).
+  - Requires `AXION_ADMIN_KEY`, presented as `Authorization: Bearer <key>` or `x-axion-admin-key`. Constant-time comparison.
+  - `AXION_ADMIN_KEY` unset → `403` `{ "error": { "message": "Admin operations are not enabled" } }` (the capability does not exist, regardless of what the caller sends).
+  - Wrong/missing key while configured → `401`.
+  - Success → `200` `{ "ok": true, "deleted": { "batches": <n> } }`. Deleting a nonexistent/empty session is a success with `batches: 0` (idempotent; preserves the no-existence-oracle property of [§15.3](#153-response-shape)).
+- **`GET /api/sessions` remains a non-goal** for the OSS core even in v0.2: a session registry is a multi-tenant SaaS concern, and its absence is part of the capability-URL security model. The dashboard's recent-session list ([§27.13](#2713-dashboard-v2)) is client-side only.
+
+### 27.8 Health endpoint
+
+**Status: specified, not built.**
+
+`GET /healthz` (and `HEAD`) → `200` `{ "ok": true, "name": "axion", "version": "<worker version>" }`, `Content-Type: application/json`, `Cache-Control: no-store`. No auth, no rate limiting, no session header, and — normatively — **no upstream or DO call** (it answers "is the Worker deployed and routing", nothing more). Registered in the route table between the dashboard rule and provider matching. Anything under `/healthz/…` is not matched (exact path only).
+
+### 27.9 Structured logging and metrics
+
+**Status: specified, not built.** Replaces the ad-hoc `console.error` strings of [§23](#23-observability) (which remain valid until this ships).
+
+**Log events** are single-line JSON objects on `console.log`/`warn`/`error`:
+
+```json
+{ "ts": 1752681600000, "level": "info", "event": "extract.ok",
+  "sessionId": "run-42", "provider": "openai", "ms": 2, "beliefs": 3 }
+```
+
+Fixed field set: `ts`, `level`, `event`, plus event-specific fields drawn from: `sessionId`, `provider`, `path`, `status`, `ms`, `attempts`, `beliefs`, `detail`. **Never logged at any level:** credentials, message/response content, belief text, schemas. At `debug` only, `detail` may carry error strings.
+
+| Event | Level | When |
+|---|---|---|
+| `config.invalid` | warn | malformed `AXION_*` value (once per isolate per var) |
+| `proxy.upstream_error` | warn | upstream non-OK passthrough |
+| `proxy.fetch_fail` | error | upstream fetch threw (502 path) |
+| `extract.ok` / `extract.fail` | info / error | lens completed / threw |
+| `store.ok` / `store.fail` | debug / error | DO write outcome |
+| `enforce.attempt` | debug | each enforce attempt with `attempts` |
+| `enforce.ok` / `enforce.fail` | info / warn | enforce terminal outcome |
+| `ratelimit.block` / `ratelimit.error` | info / warn | 429 issued / limiter unavailable |
+| `webhook.ok` / `webhook.fail` | debug / warn | export delivery outcome |
+| `do.migrate` | info | v1→v2 storage migration performed |
+
+`AXION_LOG_LEVEL` gates emission (`error` < `warn` < `info` < `debug`); default `warn` keeps production logs quiet.
+
+**Metrics:** when the optional `AXION_METRICS` Analytics Engine binding exists, one datapoint per proxied request: `blobs: [provider, pathKind ("observe"|"enforce"|"beliefs"), outcome ("ok"|"upstream_error"|"blocked"|"error")]`, `doubles: [callerLatencyMs, beliefsExtracted]`, `indexes: [sessionId]`. Metrics writes are fire-and-forget inside `waitUntil` (R4).
+
+### 27.10 Export integrations
+
+**Status: specified, not built.**
+
+**Webhook sink.** When `AXION_WEBHOOK_URL` is set, after every successful DO store the Worker POSTs (inside the same `waitUntil`):
+
+```json
+{ "kind": "axion.belief_batch", "axionVersion": "<worker version>",
+  "sessionId": "run-42",
+  "batch": { "id": "<batch uuid>", "beliefs": [ … ], "rawText": "…", "timestamp": 1752681600000 } }
+```
+
+- Headers: `Content-Type: application/json`; when `AXION_WEBHOOK_SECRET` is set, `x-axion-signature: sha256=<hex HMAC-SHA256 of the exact body bytes>`.
+- Delivery: 5-second timeout; on failure (non-2xx or throw) up to 2 retries with 1 s / 4 s backoff, then give up with a `webhook.fail` log. **At-least-once** semantics — consumers MUST dedupe on `batch.id`.
+- The webhook never blocks or fails the proxy (G3) and respects `x-axion-no-store` (nothing stored → nothing exported).
+
+**OpenTelemetry / Langfuse mapping** (a mapping contract, not a transport): each batch maps to one span event per belief with attributes `axion.session_id`, `axion.belief.id`, `axion.belief.type`, `axion.belief.text`, `axion.belief.confidence`, `axion.belief.line`, and optional `axion.belief.evidence` / `axion.belief.action`. Timestamps use the batch `timestamp`. Any exporter (including the webhook consumer) SHOULD use these attribute names so downstream tooling converges.
+
+### 27.11 CORS policy
+
+**Status: specified, not built.**
+
+- `AXION_ALLOWED_ORIGINS` unset or `*` → v0.1 behavior (wildcard on the beliefs API).
+- Otherwise it is a comma-separated origin allowlist. On `/api/*` responses: a request `Origin` on the list is echoed back in `Access-Control-Allow-Origin` with `Vary: Origin`; an off-list origin gets **no** CORS headers (the browser blocks; the HTTP response is otherwise unchanged).
+- **Preflight:** `OPTIONS /api/*` → `204` with `Access-Control-Allow-Methods: GET, DELETE, OPTIONS`, `Access-Control-Allow-Headers: authorization, x-axion-read-key, x-axion-admin-key`, `Access-Control-Max-Age: 86400`, and the origin rules above. (Needed because [§27.2](#272-beliefs-read-api-authentication)'s auth headers make beliefs requests non-simple.)
+- Provider routes get no CORS headers in any configuration: agents are not browsers, and enabling cross-origin browser calls to a key-forwarding proxy would be an anti-feature.
+
+### 27.12 Additional providers
+
+**Status: specified, not built.** Both follow the [§11.4](#114-adding-a-provider) checklist; registry order becomes `[openai, openaiResponses, anthropic, gemini]`.
+
+**OpenAI Responses adapter** (`id: "openai-responses"`):
+
+| Property | Value |
+|---|---|
+| Route / upstream path | `POST /v1/responses` |
+| Request validation | `input` present (string or non-empty array) |
+| Streaming text | SSE events with `type === "response.output_text.delta"` → `delta` |
+| Non-streaming text | join `output[]` items of `type === "message"` → their `content[]` parts of `type === "output_text"` → `.text` |
+| Auth | identical to OpenAI ([§6](#6-authentication-and-credential-resolution)) |
+| Enforce support | retry turns appended to `input` in chat-message form; success shape mirrors a minimal `response` object |
+
+**Gemini adapter** (`id: "gemini"`):
+
+| Property | Value |
+|---|---|
+| Route / upstream path | `POST /v1beta/models/<model>:generateContent` and `:streamGenerateContent` (prefix + suffix match; `<model>` passes through) |
+| Request validation | `contents` is a non-empty array |
+| Streaming text | SSE payloads → `candidates[0].content.parts[]` with string `text`, concatenated |
+| Non-streaming text | same path on the full body |
+| Auth | caller `x-goog-api-key` passthrough → else `?key=` query passthrough → else server key as `x-goog-api-key` → else 401 (extends the [§6.1](#61-resolution-algorithm) ladder with a provider-specific rung) |
+| Enforce support | retry turns appended to `contents` as `role: "user"` parts |
+
+### 27.13 Dashboard v2
+
+**Status: specified, not built.** All client-side; no new server routes beyond those above.
+
+- **Live mode:** a "Live" toggle polls the beliefs API every 5 s (using `since` + `nextCursor` from [§27.6](#276-read-api-v11--pagination-and-filtering) to fetch only new beliefs). Polling pauses when `document.visibilityState === "hidden"` and resumes on visibility.
+- **Recent sessions:** a client-side MRU list (max 10) in `localStorage` key `axion.recentSessions`, rendered as a `<datalist>` on the session input. Purely local — deliberately not a server registry ([§27.7](#277-session-administration)).
+- **Read-key flow:** on `401`, show a key prompt; store in `sessionStorage` `axion.readKey`; send as `x-axion-read-key` ([§27.2](#272-beliefs-read-api-authentication)).
+- **Search and export:** a client-side substring filter over `belief`, `evidence`, and `rawText`; an "Export JSON" button downloading the currently filtered view as `axion-<sessionId>.json`.
+- **Offline option:** if `vendor/react.js` and `vendor/react-dom.js` exist in the assets directory, `index.html` loads them instead of the CDN (script `onerror` fallback to CDN). Removes the only internet dependency ([§22.3](#223-known-behavioral-constraints)).
+- **Accessibility:** all filter controls labelled (`<label>`/`aria-label`), full keyboard operability, and visible focus states. Type colors ([§17.6](#176-belief-card)) MUST NOT be the only distinguishing signal (badges keep their text labels).
+
+### 27.14 Enforce hardening
+
+**Status: specified, not built.**
+
+- **`x-axion-enforce-attempts` request header:** integer, clamped to `[1, MAX_ENFORCE_ATTEMPTS]`; non-integer values are ignored (default 3). Lets latency-sensitive callers choose fail-fast (`1`).
+- **Response headers on every enforce result** (200 and 422): `x-axion-enforce-attempts: <attempts actually used>` and `x-axion-enforce-outcome: ok | failed`.
+- **Usage aggregation:** when upstream responses carry usage objects, the success shape ([§16.11](#1611-success-response-shapes)) reports the **sum across all attempts** (prompt/input and completion/output tokens) instead of zeros, so enforce-mode cost is visible to the caller. Absent upstream usage → zeros, as today.
+- **Per-attempt timeout:** each upstream call runs under `AbortSignal.timeout(AXION_ENFORCE_TIMEOUT_MS)`. A timed-out attempt returns `504` `{ "error": { "message": "Upstream attempt timed out", "attempt": <n> } }` with the session header (no silent retry on timeout — the caller decides).
+- **Schema size cap:** an `x-axion-schema` header value exceeding 8 192 bytes → `400` `{ "error": { "message": "Schema too large (max 8192 bytes in x-axion-schema; use response_format for larger schemas)" } }`. Body-borne schemas are bounded by [§27.15](#2715-request-limits) instead.
+
+### 27.15 Request limits
+
+**Status: specified, not built.**
+
+- **Body size:** requests to provider routes with `Content-Length > AXION_MAX_BODY_BYTES` → `413` `{ "error": { "message": "Request body too large" } }` before the body is read. Without a `Content-Length`, the limit is enforced while reading (abort + 413 once exceeded).
+- **Session id length:** an `x-axion-session` value or beliefs-path id longer than 256 characters → `400` `{ "error": { "message": "Session id too long (max 256 characters)" } }`. (Bounds DO name material and log noise.)
+- These checks run before auth so oversized requests cannot consume upstream budget.
+
+### 27.16 v0.2 route table (consolidated)
+
+The route evaluation order of [§5.1](#51-route-table) with v0.2 additions, first match wins:
+
+| # | Match | Handler | Status |
+|---|---|---|---|
+| 1 | `GET /healthz` (exact) | health | v0.2 |
+| 2 | `OPTIONS /api/*` | CORS preflight | v0.2 |
+| 3 | `GET /api/beliefs/:id` | beliefs read (+ auth, pagination) | shipped, extended in v0.2 |
+| 4 | `DELETE /api/beliefs/:id` | session delete | v0.2 |
+| 5 | `/dashboard*` | static assets | shipped |
+| 6 | provider match | proxy (+ proxy key, rate limit, size limits) | shipped, extended in v0.2 |
+| 7 | `GET /` | 302 → `/dashboard` | shipped |
+| 8 | otherwise | 404 | shipped |
+
+---
+
+## 28. Appendix A: header reference
+
+### 28.1 Request headers read by Axion
 
 | Header | Read by | Purpose |
 |---|---|---|
@@ -1218,9 +1478,9 @@ Multi-session dashboard, cross-session analysis, team sharing/alerting, communit
 | `x-axion-session` | proxy | session correlation id ([§8](#8-session-model)) |
 | `x-axion-schema` | PolyVerdict | inline JSON Schema enforce trigger ([§16.1](#161-trigger-detection)) |
 
-All other request headers are ignored and **not** forwarded upstream.
+All other request headers are ignored and **not** forwarded upstream. (v0.2 adds `x-axion-read-key`, `x-axion-admin-key`, `x-axion-proxy-key`, `x-axion-no-store`, `x-axion-enforce-attempts`, and `x-goog-api-key` — see [§27](#27-production-hardening--v02-specification-not-built); none are forwarded upstream except `x-goog-api-key` on the Gemini path.)
 
-### 27.2 Response headers set by Axion
+### 28.2 Response headers set by Axion
 
 | Header | Where | Value |
 |---|---|---|
@@ -1228,11 +1488,13 @@ All other request headers are ignored and **not** forwarded upstream.
 | `Content-Type` | Worker-generated responses | `application/json` (errors, enforce results, beliefs API) |
 | `Access-Control-Allow-Origin` | beliefs API only | `*` |
 
+v0.2 adds `x-axion-ratelimit-*` ([§27.4](#274-rate-limiting)), `x-axion-enforce-attempts` / `x-axion-enforce-outcome` ([§27.14](#2714-enforce-hardening)), `Retry-After` on 429, and `Vary: Origin` under restricted CORS ([§27.11](#2711-cors-policy)).
+
 ---
 
-## 28. Appendix B: worked examples
+## 29. Appendix B: worked examples
 
-### 28.1 Observe, streaming (OpenAI)
+### 29.1 Observe, streaming (OpenAI)
 
 ```bash
 curl -N http://localhost:8787/v1/chat/completions \
@@ -1245,7 +1507,7 @@ curl -N http://localhost:8787/v1/chat/completions \
 
 The caller receives the upstream SSE bytes untouched, plus `x-axion-session: run-42`. If the assistant says *"The deploy failed because the migration lockfile is stale. I'll regenerate it."*, the background pass stores two beliefs under `run-42`: a `causal` (belief "the migration lockfile is stale", baseline 0.85) and an `intention` (belief "regenerate it", baseline 0.75).
 
-### 28.2 Reading the timeline
+### 29.2 Reading the timeline
 
 ```bash
 curl http://localhost:8787/api/beliefs/run-42
@@ -1254,7 +1516,7 @@ curl http://localhost:8787/api/beliefs/run-42
 
 Dashboard equivalent: `http://localhost:8787/dashboard?session=run-42`.
 
-### 28.3 Enforce via header (OpenAI)
+### 29.3 Enforce via header (OpenAI)
 
 ```bash
 curl http://localhost:8787/v1/chat/completions \
@@ -1266,7 +1528,7 @@ curl http://localhost:8787/v1/chat/completions \
 
 Model returns ` ```json {"score": "8"} ``` ` → fences stripped, `"8"` coerced to `8`, response is an OpenAI-shaped 200 whose assistant content is `{"score":8}`. Had the model omitted `score` three times, the caller would get `422` with `["$: missing required property \"score\""]`.
 
-### 28.4 Enforce via body (Anthropic)
+### 29.4 Enforce via body (Anthropic)
 
 ```bash
 curl http://localhost:8787/v1/messages \
@@ -1280,7 +1542,7 @@ curl http://localhost:8787/v1/messages \
 
 `response_format` is consumed by Axion (stripped upstream); the reply is an Anthropic-shaped `message` whose single text block is the coerced JSON.
 
-### 28.5 Fail-closed auth
+### 29.5 Fail-closed auth
 
 ```bash
 curl -s http://localhost:8787/v1/chat/completions \
@@ -1293,6 +1555,36 @@ curl -s http://localhost:8787/v1/chat/completions \
 
 ---
 
-## 29. Document history
+## 30. Appendix C: system invariants (conformance checklist)
 
+Testable invariants of the **shipped** system. An implementation claiming conformance to this spec MUST satisfy every one; each is suitable as a standing regression test. v0.2 features ([§27](#27-production-hardening--v02-specification-not-built)) must preserve all of them (rule R3).
+
+| # | Invariant | Spec |
+|---|---|---|
+| I1 | The observe path never buffers, transforms, or delays the caller's response branch. | [§9](#9-observe-path), G2 |
+| I2 | The literal strings `Bearer undefined` and `Bearer ` (empty key) are never sent upstream. | [§6.1](#61-resolution-algorithm), G6 |
+| I3 | A request with no caller credential and no server key receives exactly 401 with the documented error body. | [§6.1](#61-resolution-algorithm) |
+| I4 | Only the headers enumerated in [§6.4](#64-headers-sent-upstream) are ever sent upstream; no caller header leaks through. | [§6.4](#64-headers-sent-upstream) |
+| I5 | Every response that reached an upstream call (or the enforce 422) carries `x-axion-session`; 400/401 responses issued before that point do not. | [§8.3](#83-session-header-echo) |
+| I6 | No failure in extraction, storage, webhook export, or metrics ever changes the status, headers, or body delivered to the proxy caller. | G3, [§9.7](#97-background-extraction-contract) |
+| I7 | Raw JSON response bodies are never scanned by the lens; only normalized assistant text is. | [§10](#10-content-normalization) |
+| I8 | Every stored belief's `confidence` lies in `[0.1, 1.0]` and every belief carries the resolving session id. | [§12.5](#125-confidence-algorithm) |
+| I9 | The enforce path is entered only when a schema trigger is present; a request without one always takes the observe path. | [§16.1](#161-trigger-detection) |
+| I10 | Enforce responses are always non-streaming JSON, regardless of the client's `stream` value. | [§16.2](#162-enforce-loop) |
+| I11 | A 422 is issued only after exactly `MAX_ENFORCE_ATTEMPTS` upstream attempts, and its `errors` list is from the final attempt. | [§16.12](#1612-failure-response-422) |
+| I12 | The delivered enforce content on success parses as JSON and revalidates cleanly against the trigger schema (coercion is idempotent). | [§16.5](#165-json-schema-subset) |
+| I13 | Coercion never changes container types (object ↔ array ↔ primitive) and enum checks always run on post-coercion values. | [§16.6](#166-type-coercion-matrix) |
+| I14 | Upstream non-OK responses pass through byte-identical except for the added `x-axion-session` header. | [§9.2](#92-upstream-error-passthrough) |
+| I15 | The opaque Durable Object id is never exposed on any public surface; `sessionId` in responses is always the human name or the caller's hint. | [§14.1](#141-internal-api) |
+| I16 | A read of a never-written session returns 200 with an empty `beliefs` list — indistinguishable from a real empty session. | [§15.3](#153-response-shape) |
+| I17 | UTF-8 multi-byte sequences split across stream chunks are decoded losslessly (streaming decode + final flush). | [§9.6](#96-text-decoding-rules) |
+| I18 | Multiple `data:` lines in one SSE record are joined with `\n`, and a trailing unterminated record is still processed at stream end. | [§9.5](#95-sse-parsing) |
+| I19 | No credential, message content, or belief text appears in logs. | [§23](#23-observability), [§27.9](#279-structured-logging-and-metrics) |
+| I20 | The UI and API never label a belief "wrong" or "invalidated"; low confidence is presented as hedging only. | [§12.6](#126-accuracy-caveats-normative-disclosure), [§17.5](#175-filters) |
+
+---
+
+## 31. Document history
+
+- **1.1.0** — Added [§27](#27-production-hardening--v02-specification-not-built): the complete v0.2 production-hardening specification (governing rules R1–R5; configuration surface; beliefs-API read key; proxy access keys; token-bucket rate limiting with a limiter DO; storage layout v2 with per-batch keys, retention caps, TTL alarms, lazy v1→v2 migration, and privacy controls including `x-axion-no-store`; read-API pagination/filtering with cursors; session deletion; `/healthz`; structured log-event schema and Analytics Engine metrics; HMAC-signed webhook export and an OTel attribute mapping; CORS allowlisting with preflight; OpenAI Responses and Gemini adapters; enforce hardening — attempt override, outcome headers, usage aggregation, per-attempt timeout, schema size cap; request size/session-id limits; and the consolidated v0.2 route table). Added [Appendix C](#30-appendix-c-system-invariants-conformance-checklist): twenty testable conformance invariants. Renumbered appendices.
 - **1.0.0** — Complete rewrite. Replaced the previous high-level overview with a full normative specification: routing and lifecycle contracts, the auth algorithm and header allowlist, tee/SSE/decoding rules, the exact pattern registry and confidence algorithm with worked examples, the storage schema and its limits, the full PolyVerdict trigger/loop/schema/coercion/retry/response contract, the dashboard behavior spec, a complete error matrix, security threat model, numeric-constants table, compatibility policy, and detailed planned-layer designs (Loop, Gate, graph, semantic PolyVerdict). Prior drafts: see [PLAN.md](./PLAN.md) for how the current state was reached; [BUILD-SPEC.md](./BUILD-SPEC.md) remains the locked product-decision record; [SPEC-PolyVerdict.md](./SPEC-PolyVerdict.md) and [TECHNICAL.md](./TECHNICAL.md) remain as focused companions and defer to this document.
