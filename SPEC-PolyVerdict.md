@@ -2,6 +2,7 @@
 
 > **Status:** Proposal — potential Axion Gate evolution
 > **Type:** Feature spec (proxy layer for LLM output compliance)
+> **Sequencing:** Not part of Phase 1 OSS. See [PLAN.md](./PLAN.md) Wave 4 — opt-in enforce mode after Lens observe path is shippable. Do not implement as default Lens middleware.
 
 ## Problem
 

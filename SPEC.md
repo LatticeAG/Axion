@@ -84,9 +84,11 @@ State: Durable Object per session (belief DAG in memory)
 
 | Phase | What | Status |
 |---|---|---|
-| 1 | Axion Lens - proxy + belief extraction + local dashboard | **Next** |
+| 1 | Axion Lens - proxy + belief extraction + local dashboard | **Next** (see [PLAN.md](./PLAN.md)) |
 | 2 | Axion Loop - embedding detection + intervention injection | Future |
 | 3 | Axion Gate - tool call interception + verification + blocking | Future |
+
+Production OSS readiness (auth, dashboard contract, docs honesty, PolyVerdict sequencing) is specified in [PLAN.md](./PLAN.md). Do not treat Loop/Gate/PolyVerdict as part of the Phase 1 OSS tag until that plan’s Wave 0–1 exits.
 
 ## Open-Source Scope (Phase 1)
 
