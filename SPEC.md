@@ -484,7 +484,7 @@ extractBeliefs(text: string, opts?: {
 
 ### 12.2 Pattern registry
 
-`BELIEF_PATTERNS` is an ordered list of 14 patterns. Order matters (precedence). All are case-insensitive. Capture-group semantics: `group` = belief text, `evidenceGroup` = cited evidence, `actionGroup` = stated action. Clause captures are non-greedy and bounded (2–120 chars; 2–140 for `error-says`); a clause ends at `.` `;` `!` `?`, a newline, or end of string, so a match at the very end of a response is not lost for lack of trailing punctuation.
+`BELIEF_PATTERNS` is an ordered list of 13 patterns. Order matters (precedence). All are case-insensitive. Capture-group semantics: `group` = belief text, `evidenceGroup` = cited evidence, `actionGroup` = stated action. Clause captures are non-greedy and bounded (2–120 chars; 2–140 for `error-says`); a clause ends at `.` `;` `!` `?`, a newline, or end of string, so a match at the very end of a response is not lost for lack of trailing punctuation.
 
 | # | Label | Type | Baseline | Regex (source) | Captures |
 |---|---|---|---|---|---|
@@ -501,7 +501,6 @@ extractBeliefs(text: string, opts?: {
 | 11 | `if-then` | assumption | 0.60 | `\bif\s+([^,.;!?\n]{2,100}?)\s+then\s+([^.;!?\n]{2,120}?)(?:[.;!?\n]\|$)` | belief = group 1 (condition), action = group 2 |
 | 12 | `i-will` | intention | 0.75 | `\b(?:i(?:'ll\| will\|i'm going to\|'m going to)\|let me\|i should\|i'm going to)\s+([^.;!?\n]{2,120}?)(?:[.;!?\n]\|$)` | belief = group 1 |
 | 13 | `i-plan` | intention | 0.75 | `\bi (?:plan\|intend)\s+to\s+([^.;!?\n]{2,120}?)(?:[.;!?\n]\|$)` | belief = group 1 |
-| 14 | — | — | — | *(end of list)* | |
 
 Design conventions encoded above:
 
@@ -1074,7 +1073,7 @@ Vulnerabilities are reported privately via GitHub Security Advisories ([SECURITY
 
 Normative: the observe path MUST NOT introduce buffering on the caller branch. Enforce mode's buffering and retries are by design and documented to callers.
 
-Extraction cost scales with `patterns × text length` (14 regex passes plus an 80-char-window marker scan per match). This is background CPU inside `waitUntil` and does not affect the caller.
+Extraction cost scales with `patterns × text length` (13 regex passes plus an 80-char-window marker scan per match). This is background CPU inside `waitUntil` and does not affect the caller.
 
 ---
 
