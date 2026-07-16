@@ -242,3 +242,179 @@ describe('extractBeliefs - belief shape', () => {
     expect(b.line).toBe(2);
   });
 });
+
+// ── I4: tightened "from the" pattern ──────────────────────────────────────
+describe('extractBeliefs - "from the" false-positive regression', () => {
+  it('does NOT treat the idiom "from the start" as evidence', async () => {
+    const beliefs = await extractBeliefs(
+      'I suspected it from the start.',
+      fixedOpts('s1'),
+    );
+    expect(findByType(beliefs, 'evidence')).toHaveLength(0);
+  });
+
+  it('does NOT match "from the beginning" ending a clause', async () => {
+    const beliefs = await extractBeliefs(
+      'We planned it from the beginning and it worked.',
+      fixedOpts('s1'),
+    );
+    expect(beliefs.some((b) => b.rawText.toLowerCase().startsWith('from the'))).toBe(
+      false,
+    );
+  });
+
+  it('DOES match "from the logs," when a clause follows (comma signal)', async () => {
+    const beliefs = await extractBeliefs(
+      'From the logs, the request timed out.',
+      fixedOpts('s1'),
+    );
+    const evidence = findByType(beliefs, 'evidence');
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]!.belief).toBe('logs');
+    expect(evidence[0]!.evidence).toBe('logs');
+  });
+
+  it('DOES match "from the trace then" (then signal)', async () => {
+    const beliefs = await extractBeliefs(
+      'From the trace then we can see the retry loop.',
+      fixedOpts('s1'),
+    );
+    const evidence = findByType(beliefs, 'evidence');
+    expect(evidence.length).toBeGreaterThan(0);
+    expect(evidence[0]!.belief).toBe('trace');
+  });
+});
+
+// ── I4: new patterns ──────────────────────────────────────────────────────
+describe('extractBeliefs - "so that X" → intention', () => {
+  it('captures the goal clause as an intention', async () => {
+    const beliefs = await extractBeliefs(
+      'We cache results so that lookups stay fast.',
+      fixedOpts('s1'),
+    );
+    const intent = findByType(beliefs, 'intention');
+    expect(intent).toHaveLength(1);
+    expect(intent[0]!.belief).toBe('lookups stay fast');
+  });
+});
+
+describe('extractBeliefs - "which means" / "this means" → causal', () => {
+  it('captures the consequence after "which means"', async () => {
+    const beliefs = await extractBeliefs(
+      'The cache is stale, which means the results are wrong.',
+      fixedOpts('s1'),
+    );
+    const causal = findByType(beliefs, 'causal');
+    expect(causal.length).toBeGreaterThan(0);
+    const belief = causal.find((b) => b.belief === 'the results are wrong');
+    expect(belief).toBeDefined();
+  });
+
+  it('captures the consequence after "this means" (with optional "that")', async () => {
+    const beliefs = await extractBeliefs(
+      'This means that the migration must run first.',
+      fixedOpts('s1'),
+    );
+    const causal = findByType(beliefs, 'causal');
+    expect(causal).toHaveLength(1);
+    expect(causal[0]!.belief).toBe('the migration must run first');
+  });
+});
+
+describe('extractBeliefs - "looking at X" → evidence', () => {
+  it('captures the inspected artifact as evidence (strips a leading "the")', async () => {
+    const beliefs = await extractBeliefs(
+      'Looking at the stack trace, the null check is missing.',
+      fixedOpts('s1'),
+    );
+    const evidence = findByType(beliefs, 'evidence');
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]!.belief).toBe('stack trace');
+    expect(evidence[0]!.evidence).toBe('stack trace');
+  });
+});
+
+describe('extractBeliefs - "given that X" → assumption', () => {
+  it('captures the premise as an assumption', async () => {
+    const beliefs = await extractBeliefs(
+      'Given that the tests pass, we can ship.',
+      fixedOpts('s1'),
+    );
+    const assumption = findByType(beliefs, 'assumption');
+    expect(assumption).toHaveLength(1);
+    expect(assumption[0]!.belief).toBe('the tests pass');
+  });
+});
+
+describe('extractBeliefs - "my plan is to X" → intention', () => {
+  it('captures the plan as an intention', async () => {
+    const beliefs = await extractBeliefs(
+      'My plan is to split the module in two.',
+      fixedOpts('s1'),
+    );
+    const intent = findByType(beliefs, 'intention');
+    expect(intent).toHaveLength(1);
+    expect(intent[0]!.belief).toBe('split the module in two');
+  });
+});
+
+// ── I4: exact-duplicate belief dedup ──────────────────────────────────────
+describe('extractBeliefs - drops exact-duplicate belief strings', () => {
+  it('keeps only the first of two identical belief strings', async () => {
+    const beliefs = await extractBeliefs(
+      'It broke because the token expired. Which means the token expired.',
+      fixedOpts('s1'),
+    );
+    const matching = beliefs.filter((b) => b.belief === 'the token expired');
+    expect(matching).toHaveLength(1);
+    // the survivor is the earliest match (the causal "because" clause)
+    expect(matching[0]!.rawText.toLowerCase()).toContain('because');
+  });
+
+  it('deduplicates case-insensitively and after trimming', async () => {
+    const beliefs = await extractBeliefs(
+      'It failed because the Cache is stale. This means the cache is STALE.',
+      fixedOpts('s1'),
+    );
+    const normalized = beliefs
+      .map((b) => b.belief.trim().toLowerCase())
+      .filter((s) => s === 'the cache is stale');
+    expect(normalized).toHaveLength(1);
+  });
+
+  it('keeps distinct belief strings that only partially overlap', async () => {
+    const beliefs = await extractBeliefs(
+      'It broke because the token expired. This means the request failed.',
+      fixedOpts('s1'),
+    );
+    const causal = findByType(beliefs, 'causal');
+    const texts = causal.map((b) => b.belief);
+    expect(texts).toContain('the token expired');
+    expect(texts).toContain('the request failed');
+  });
+});
+
+// ── I4: pattern table invariants ──────────────────────────────────────────
+describe('BELIEF_PATTERNS - table invariants', () => {
+  it('has unique labels', () => {
+    const labels = BELIEF_PATTERNS.map((p) => p.label);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it('registers all the new I4 patterns', () => {
+    const labels = new Set(BELIEF_PATTERNS.map((p) => p.label));
+    for (const label of ['so-that', 'which-means', 'looking-at', 'given-that', 'my-plan']) {
+      expect(labels.has(label)).toBe(true);
+    }
+  });
+
+  it('classifies the new patterns with the expected types', () => {
+    const byLabel = Object.fromEntries(BELIEF_PATTERNS.map((p) => [p.label, p]));
+    expect(byLabel['so-that']!.type).toBe('intention');
+    expect(byLabel['my-plan']!.type).toBe('intention');
+    expect(byLabel['which-means']!.type).toBe('causal');
+    expect(byLabel['looking-at']!.type).toBe('evidence');
+    expect(byLabel['looking-at']!.evidenceGroup).toBe(1);
+    expect(byLabel['given-that']!.type).toBe('assumption');
+  });
+});

@@ -50,8 +50,9 @@ export async function extractBeliefs(
 
   const rawMatches = scanPatterns(text);
   const deduped = dedupeOverlaps(rawMatches);
+  const unique = dropDuplicateBeliefs(deduped);
 
-  return deduped.map((m) => {
+  return unique.map((m) => {
     const baseline = BELIEF_PATTERNS[m.patternIndex]!.confidence;
     const context = surroundingContext(text, m.index, m.fullMatch.length);
     const confidence = adjustConfidence(baseline, context);
@@ -133,6 +134,27 @@ function dedupeOverlaps(matches: PatternMatch[]): PatternMatch[] {
       return m.index >= kept.index && mEnd <= kEnd;
     });
     if (!dominated) out.push(m);
+  }
+  return out;
+}
+
+/**
+ * Drop matches whose belief text (trimmed, case-folded) exactly duplicates an
+ * earlier match's belief text. Keeps the first occurrence - because `matches`
+ * is already ordered by source position then pattern precedence, the survivor
+ * is the earliest / highest-precedence instance. This stops the same claim from
+ * being emitted twice when it is phrased with two different connectives
+ * (e.g. "because X ... which means X").
+ */
+function dropDuplicateBeliefs(matches: PatternMatch[]): PatternMatch[] {
+  const seen = new Set<string>();
+  const out: PatternMatch[] = [];
+  for (const m of matches) {
+    const key = m.capture.trim().toLowerCase();
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(m);
   }
   return out;
 }

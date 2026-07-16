@@ -68,11 +68,15 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
     evidenceGroup: 1,
     confidence: 0.8,
   },
-  // "from the X, ..."  (only when followed by a verb phrase - avoids "from the start")
+  // "from the X, ..." / "from the X then ..." / "from the X: ..."
+  // Requires a following clause signal (comma, "then", or colon) so it reads as
+  // evidence introducing a conclusion. This deliberately rejects bare idioms
+  // like "from the start" / "from the beginning." that end the clause with no
+  // following signal (the top false-positive source for this pattern).
   {
     label: 'from-the',
     type: 'evidence',
-    pattern: /\bfrom the ([^.;!?\n]{2,120}?)(?:[,.;]|\sthen|$)/i,
+    pattern: /\bfrom the ([^.;!?\n]{2,120}?)(?:,\s|\s+then\b|:\s)/i,
     group: 1,
     evidenceGroup: 1,
     confidence: 0.7,
@@ -85,6 +89,15 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
     group: 1,
     evidenceGroup: 1,
     confidence: 0.85,
+  },
+  // "looking at X, ..." - treats the thing being inspected as cited evidence.
+  {
+    label: 'looking-at',
+    type: 'evidence',
+    pattern: /\blooking at\s+(?:the\s+)?([^.;!?\n]{2,120}?)(?:[,.;]|\sthen|$)/i,
+    group: 1,
+    evidenceGroup: 1,
+    confidence: 0.75,
   },
 
   // ── Causal claims ──────────────────────────────────────────────────────
@@ -122,6 +135,14 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
     group: 1,
     confidence: 0.85,
   },
+  // "which means X" / "this means X" - the consequence is the causal belief.
+  {
+    label: 'which-means',
+    type: 'causal',
+    pattern: /\b(?:which|this) means\s+(?:that\s+)?([^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    group: 1,
+    confidence: 0.75,
+  },
 
   // ── Assumptions ─────────────────────────────────────────────────────────
   // "assuming X" / "presumably X"
@@ -149,6 +170,14 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
     actionGroup: 2,
     confidence: 0.6,
   },
+  // "given that X" - the premise being taken as given is the assumption.
+  {
+    label: 'given-that',
+    type: 'assumption',
+    pattern: /\bgiven that\s+([^.;!?\n]{2,120}?)(?:[,.;!?\n]|$)/i,
+    group: 1,
+    confidence: 0.65,
+  },
 
   // ── Intentions ──────────────────────────────────────────────────────────
   // "I'll do X" / "I will do X" / "I'm going to X" / "let me X" / "I should X"
@@ -168,6 +197,22 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
     pattern: /\bi (?:plan|intend)\s+to\s+([^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
     group: 1,
     confidence: 0.75,
+  },
+  // "my plan is to X" - explicit plan statement.
+  {
+    label: 'my-plan',
+    type: 'intention',
+    pattern: /\bmy plan is to\s+([^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    group: 1,
+    confidence: 0.75,
+  },
+  // "so that X" - the goal clause is treated as a stated intention.
+  {
+    label: 'so-that',
+    type: 'intention',
+    pattern: /\bso that\s+([^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    group: 1,
+    confidence: 0.6,
   },
 ];
 
