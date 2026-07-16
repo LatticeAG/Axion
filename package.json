@@ -14,6 +14,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "tsc --noEmit && vitest run",
     "tail": "wrangler tail"
   },
   "devDependencies": {
