@@ -180,9 +180,42 @@ html, body {
   margin-bottom: 2rem;
 }
 
-.session-selector select {
-  width: 100%;
-  max-width: 400px;
+.session-form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+  max-width: 480px;
+}
+
+.session-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-load-btn {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.4rem 1rem;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  border-radius: 2px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.session-load-btn:hover:not(:disabled) {
+  border-color: var(--border-hover);
+}
+
+.session-load-btn:focus {
+  border-color: var(--text-secondary);
+}
+
+.session-load-btn:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
 }
 
 /* Timeline */
