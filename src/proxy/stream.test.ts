@@ -6,6 +6,7 @@
 import { describe, it, expect } from "vitest";
 import {
   parseSseData,
+  parseAnthropicSseData,
   SseLineParser,
   teeResponseForExtraction,
 } from "./stream";
@@ -39,6 +40,37 @@ describe("parseSseData", () => {
   it("returns empty text for non-JSON or missing delta", () => {
     expect(parseSseData("not json").text).toBe("");
     expect(parseSseData(JSON.stringify({ choices: [] })).text).toBe("");
+  });
+});
+
+describe("parseAnthropicSseData", () => {
+  it("extracts text from a content_block_delta text_delta", () => {
+    const payload = JSON.stringify({
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: "Hello" },
+    });
+    const r = parseAnthropicSseData(payload);
+    expect(r.text).toBe("Hello");
+    expect(r.done).toBe(false);
+  });
+
+  it("marks done=true on message_stop", () => {
+    const r = parseAnthropicSseData(JSON.stringify({ type: "message_stop" }));
+    expect(r.done).toBe(true);
+    expect(r.text).toBe("");
+  });
+
+  it("ignores non-text deltas and other event types", () => {
+    const inputJson = JSON.stringify({
+      type: "content_block_delta",
+      delta: { type: "input_json_delta", partial_json: "{" },
+    });
+    expect(parseAnthropicSseData(inputJson).text).toBe("");
+    expect(
+      parseAnthropicSseData(JSON.stringify({ type: "message_start" })).text
+    ).toBe("");
+    expect(parseAnthropicSseData("not json").text).toBe("");
   });
 });
 
@@ -115,6 +147,49 @@ describe("teeResponseForExtraction", () => {
 
     // Extraction branch saw only the delta text.
     expect(await accumulatedText).toBe("Hello world");
+  });
+
+  it("tees an Anthropic SSE stream and accumulates text_delta text", async () => {
+    const sse =
+      'event: content_block_delta\n' +
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}\n\n' +
+      'event: content_block_delta\n' +
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}\n\n' +
+      'event: message_stop\n' +
+      'data: {"type":"message_stop"}\n\n';
+    const original = new Response(sse, {
+      headers: { "content-type": "text/event-stream" },
+    });
+    const { response, accumulatedText } = teeResponseForExtraction(
+      original,
+      true,
+      "anthropic"
+    );
+
+    expect(await response.text()).toBe(sse);
+    expect(await accumulatedText).toBe("Hello world");
+  });
+
+  it("flushes trailing multi-byte UTF-8 split across chunk boundaries", async () => {
+    // "é" is 0xC3 0xA9; split the two bytes across two stream chunks so the
+    // decoder must hold the first byte until the final flush.
+    const bytes = new TextEncoder().encode("café");
+    const splitAt = bytes.length - 1; // last byte of the "é" sequence
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(bytes.slice(0, splitAt));
+        c.enqueue(bytes.slice(splitAt));
+        c.close();
+      },
+    });
+    const original = new Response(stream);
+    const { response, accumulatedText } = teeResponseForExtraction(
+      original,
+      false
+    );
+
+    expect(await response.text()).toBe("café");
+    expect(await accumulatedText).toBe("café");
   });
 
   it("handles a null body (returns empty accumulated text)", async () => {

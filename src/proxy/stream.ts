@@ -10,6 +10,7 @@
  */
 
 import type { StreamChunk } from "./types";
+import type { ProviderId } from "./providers/types";
 
 /**
  * Parse a single SSE `data:` payload (without the `data: ` prefix) into text + done.
@@ -42,6 +43,39 @@ export function parseSseData(payload: string): StreamChunk {
   }
 
   return { raw: payload, text, done: false };
+}
+
+/**
+ * Parse a single Anthropic Messages SSE `data:` payload into text + done.
+ *
+ * Anthropic streams emit typed events; assistant text arrives as
+ * `content_block_delta` events whose `delta.type === "text_delta"`. The stream
+ * terminates with a `message_stop` event (there is no `[DONE]` sentinel).
+ */
+export function parseAnthropicSseData(payload: string): StreamChunk {
+  const trimmed = payload.trim();
+
+  let text = "";
+  let done = false;
+  try {
+    const json = JSON.parse(trimmed);
+    const type = json?.type;
+    if (type === "content_block_delta" && json?.delta?.type === "text_delta") {
+      const t = json.delta.text;
+      if (typeof t === "string") text = t;
+    } else if (type === "message_stop") {
+      done = true;
+    }
+  } catch {
+    // Not JSON or not a shape we recognize - contribute nothing.
+  }
+
+  return { raw: payload, text, done };
+}
+
+/** Select the SSE payload parser for a provider. */
+function sseParserFor(provider: ProviderId): (payload: string) => StreamChunk {
+  return provider === "anthropic" ? parseAnthropicSseData : parseSseData;
 }
 
 /**
@@ -117,12 +151,14 @@ export class SseLineParser {
  * Promise<string> that resolves with the full accumulated text once the body
  * has been fully consumed.
  *
- * For SSE responses we parse `data:` lines to extract just the delta text.
+ * For SSE responses we parse `data:` lines to extract just the delta text,
+ * using the parser for `provider` (defaults to OpenAI for backward compat).
  * For non-SSE responses we accumulate raw text.
  */
 export function teeResponseForExtraction(
   response: Response,
-  isSse: boolean
+  isSse: boolean,
+  provider: ProviderId = "openai"
 ): { response: Response; accumulatedText: Promise<string> } {
   const body = response.body;
   if (!body) {
@@ -130,6 +166,7 @@ export function teeResponseForExtraction(
   }
 
   const [callerStream, extractionStream] = body.tee();
+  const parseSse = sseParserFor(provider);
 
   const accumulatedText = (async () => {
     let text = "";
@@ -143,16 +180,28 @@ export function teeResponseForExtraction(
         const decoded = decoder.decode(value, { stream: true });
         if (isSse) {
           for (const payload of parser.feed(decoded)) {
-            text += parseSseData(payload).text;
+            text += parseSse(payload).text;
           }
         } else {
           text += decoded;
         }
       }
+      // Final flush of the decoder to emit any bytes held back mid multi-byte
+      // sequence at the end of the stream (decode() without stream: true).
+      const tail = decoder.decode();
+      if (tail) {
+        if (isSse) {
+          for (const payload of parser.feed(tail)) {
+            text += parseSse(payload).text;
+          }
+        } else {
+          text += tail;
+        }
+      }
       // Flush any trailing SSE data the parser still has buffered.
       if (isSse) {
         for (const payload of parser.flush()) {
-          text += parseSseData(payload).text;
+          text += parseSse(payload).text;
         }
       }
     } catch {
