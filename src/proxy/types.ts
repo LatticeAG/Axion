@@ -9,8 +9,9 @@
 export interface Env {
   /** Base URL of the upstream model API, e.g. https://api.openai.com */
   UPSTREAM_API_URL: string;
-  /** API key for the upstream model API (secret). */
-  UPSTREAM_API_KEY: string;
+  /** API key for the upstream model API (secret). Optional: callers may pass
+   * their own credentials via Authorization or x-api-key instead. */
+  UPSTREAM_API_KEY?: string;
   /** Durable Object namespace binding for per-session state. */
   SESSION: DurableObjectNamespace;
   /** Static assets binding for the dashboard. */
