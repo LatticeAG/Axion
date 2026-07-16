@@ -1,0 +1,2 @@
+UPSTREAM_API_URL=https://api.openai.com
+# UPSTREAM_API_KEY=  # optional if agents pass their own keys

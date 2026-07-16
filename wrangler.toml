@@ -3,7 +3,7 @@ main = "src/proxy/index.ts"
 compatibility_date = "2024-06-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Durable Object binding for per-session belief graph state.
+# Durable Object binding for per-session belief timeline state.
 [[durable_objects.bindings]]
 name = "SESSION"
 class_name = "SessionDurableObject"
@@ -18,6 +18,11 @@ new_classes = ["SessionDurableObject"]
 directory = "./src/dashboard"
 binding = "ASSETS"
 
-# Environment variables (set real values with `wrangler secret put`).
+# Vars / secrets:
+#   UPSTREAM_API_URL  - base URL of the model API (default OpenAI)
+#   UPSTREAM_API_KEY  - optional; only used when the caller does not send
+#                       Authorization / x-api-key. Prefer caller passthrough.
+#                       Set with: wrangler secret put UPSTREAM_API_KEY
+#                       Local: copy .dev.vars.example → .dev.vars
 [vars]
 UPSTREAM_API_URL = "https://api.openai.com"
