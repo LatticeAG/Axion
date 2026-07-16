@@ -3,6 +3,7 @@
 > **Status:** partially implemented. The syntax path ships (opt-in). Semantic verification is future work.
 > **Type:** feature spec for an opt-in enforce path in the Axion Worker.
 > **Scope lock:** [BUILD-SPEC.md](./BUILD-SPEC.md) D7/D8. This spec must not describe the enforce path as default Lens middleware; it runs only when a caller supplies a schema.
+> **Full normative specification: [SPEC.md](./SPEC.md) §16** covers the complete enforce contract (trigger detection, retry loop, schema subset, coercion matrix, response shapes). This file is the focused companion; where the two differ, SPEC.md wins.
 
 ## What ships today
 
