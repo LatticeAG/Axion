@@ -43,6 +43,24 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Atmosphere: soft radial glow so the field reads as depth, not flat black.
+   Stays strictly monochrome (white light at very low alpha). */
+body {
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(80rem 50rem at 50% -12%, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 60%),
+    radial-gradient(60rem 60rem at 100% 0%, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0) 55%);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
 /* Scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
@@ -71,6 +89,8 @@ html, body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
   padding-bottom: 1.5rem;
   border-bottom: 1px solid var(--border);
   margin-bottom: 2rem;
@@ -86,6 +106,95 @@ html, body {
 .header-title .accent {
   color: var(--text-secondary);
   font-weight: 400;
+}
+
+/* Active session block (right side of header) */
+.header-session {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.session-id-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
+.session-id-value {
+  font-size: 0.75rem;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 0.2rem 0.5rem;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Shared ghost buttons for header/session controls */
+.ghost-btn {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  padding: 0.3rem 0.7rem;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-radius: 2px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.ghost-btn:hover:not(:disabled) {
+  border-color: var(--border-hover);
+  color: var(--text);
+}
+
+.ghost-btn:focus-visible {
+  border-color: var(--text-secondary);
+}
+
+.ghost-btn:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.copy-btn.is-copied {
+  color: var(--intention);
+  border-color: rgba(34, 197, 94, 0.4);
+}
+
+.danger-btn:hover:not(:disabled) {
+  color: var(--conf-low);
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+/* Refresh indicator dot */
+.refresh-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex: none;
+}
+
+.refresh-dot.refreshing {
+  background: var(--text);
+  animation: refresh-pulse 1s ease-in-out infinite;
+}
+
+@keyframes refresh-pulse {
+  0%   { opacity: 0.35; box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.25); }
+  50%  { opacity: 1;    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0); }
+  100% { opacity: 0.35; box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
 }
 
 /* Stats bar */
@@ -218,6 +327,19 @@ html, body {
   cursor: not-allowed;
 }
 
+/* Session controls row (auto-refresh / export / clear) */
+.session-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  flex-wrap: wrap;
+}
+
+.auto-refresh-toggle {
+  margin-right: 0.25rem;
+}
+
 /* Timeline */
 .timeline {
   display: flex;
@@ -230,12 +352,35 @@ html, body {
   border: 1px solid var(--border);
   padding: 1rem 1.25rem;
   border-radius: 3px;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, background 0.15s;
   position: relative;
+  animation: card-fade-in 0.28s ease-out both;
+}
+
+@keyframes card-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .belief-card:hover {
   border-color: var(--border-hover);
+}
+
+.belief-card.is-clickable {
+  cursor: pointer;
+}
+
+.belief-card.is-clickable:hover {
+  background: var(--bg-elevated);
+}
+
+.belief-card.is-expanded {
+  border-color: var(--border-hover);
+}
+
+.belief-card:focus-visible {
+  outline: none;
+  border-color: var(--text-secondary);
 }
 
 .belief-card::before {
@@ -290,10 +435,60 @@ html, body {
   border: 1px solid rgba(168, 85, 247, 0.2);
 }
 
+.belief-header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: none;
+}
+
+.belief-expand-hint {
+  font-size: 0.85rem;
+  line-height: 1;
+  color: var(--text-muted);
+  width: 1rem;
+  text-align: center;
+}
+
+.belief-card.is-clickable:hover .belief-expand-hint {
+  color: var(--text-secondary);
+}
+
 .belief-timestamp {
   font-size: 0.7rem;
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+/* Expandable raw text */
+.belief-raw {
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+  animation: card-fade-in 0.2s ease-out both;
+}
+
+.belief-raw-label {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+  margin-bottom: 0.4rem;
+}
+
+.belief-raw-text {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 0.6rem 0.75rem;
+  max-height: 16rem;
+  overflow: auto;
 }
 
 .belief-text {
@@ -352,6 +547,29 @@ html, body {
   padding: 4rem 1rem;
   color: var(--text-muted);
   font-size: 0.85rem;
+  animation: card-fade-in 0.28s ease-out both;
+}
+
+.empty-state-title {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  margin-bottom: 0.5rem;
+}
+
+.empty-state-sub {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  max-width: 40ch;
+  margin: 0 auto;
+}
+
+.empty-state-sub code {
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 0.05rem 0.3rem;
 }
 
 /* Footer */
