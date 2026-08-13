@@ -139,7 +139,7 @@ describe("teeResponseForExtraction", () => {
     const original = new Response(sse, {
       headers: { "content-type": "text/event-stream" },
     });
-    const { response, accumulatedText } = teeResponseForExtraction(original, true);
+    const { response, accumulatedText, accumulatedRaw } = teeResponseForExtraction(original, true);
 
     // Caller sees the raw SSE bytes untouched.
     const callerText = await response.text();
@@ -147,6 +147,8 @@ describe("teeResponseForExtraction", () => {
 
     // Extraction branch saw only the delta text.
     expect(await accumulatedText).toBe("Hello world");
+    // Usage parsing needs the original frames, including non-text final chunks.
+    expect(await accumulatedRaw).toBe(sse);
   });
 
   it("tees an Anthropic SSE stream and accumulates text_delta text", async () => {
@@ -194,9 +196,10 @@ describe("teeResponseForExtraction", () => {
 
   it("handles a null body (returns empty accumulated text)", async () => {
     const original = new Response(null, { status: 204 });
-    const { response, accumulatedText } = teeResponseForExtraction(original, false);
+    const { response, accumulatedText, accumulatedRaw } = teeResponseForExtraction(original, false);
     expect(response.status).toBe(204);
     expect(await accumulatedText).toBe("");
+    expect(await accumulatedRaw).toBe("");
   });
 
   it("streams concurrently: caller does not wait for extraction", async () => {

@@ -11,6 +11,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
     UPSTREAM_API_URL: "https://api.openai.com",
     SESSION: {} as unknown as DurableObjectNamespace,
+    SESSION_REGISTRY: {} as unknown as DurableObjectNamespace,
     ASSETS: {} as unknown as Fetcher,
     ...overrides,
   };

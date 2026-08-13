@@ -14,6 +14,8 @@ export interface Env {
   UPSTREAM_API_KEY?: string;
   /** Durable Object namespace binding for per-session state. */
   SESSION: DurableObjectNamespace;
+  /** Global Durable Object namespace binding for the cross-session index. */
+  SESSION_REGISTRY: DurableObjectNamespace;
   /** Static assets binding for the dashboard. */
   ASSETS: Fetcher;
 }
@@ -32,6 +34,14 @@ export interface ExtractionResult {
   beliefs: Belief[];
   rawText: string;
   timestamp: number;
+  /** Canonical upstream token counts for this response, when supplied. */
+  usage?: import("../state/sessionUsage").TokenUsage;
+  /** Model requested for this call, used by the session registry. */
+  modelName?: string;
+  /** Upstream API shape that produced this call. */
+  provider?: "openai" | "anthropic";
+  /** Number of inbound messages supplied with this call. */
+  messageCount?: number;
 }
 
 /** Shape of the messages array in an OpenAI chat completion request. */

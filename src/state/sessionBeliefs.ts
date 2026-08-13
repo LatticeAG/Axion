@@ -8,12 +8,26 @@
  */
 
 import type { ExtractedBelief } from "../lens/types.js";
+import { decayConfidence } from "../lens/patterns.js";
+import { sumTokenUsage, type CumulativeTokenUsage, type TokenUsage } from "./sessionUsage.js";
 
 /** One stored batch: the beliefs extracted from a single response. */
 export interface BeliefBatch {
   beliefs: ExtractedBelief[];
   rawText: string;
   timestamp: number;
+  /** Upstream token counts for this individual model call, if provided. */
+  usage?: TokenUsage;
+  /** Session-registry metadata captured alongside the call. */
+  modelName?: string;
+  provider?: "openai" | "anthropic";
+  messageCount?: number;
+}
+
+/** Options governing how stored batch beliefs are exposed to readers. */
+export interface FlattenBeliefBatchesOptions {
+  /** Decay each batch by the number of newer stored turns. */
+  decayByTurn?: boolean;
 }
 
 /**
@@ -22,15 +36,37 @@ export interface BeliefBatch {
  * input (non-array batches / missing `beliefs`) so a corrupt storage read can
  * never throw.
  */
-export function flattenBeliefBatches(batches: BeliefBatch[]): ExtractedBelief[] {
+export function flattenBeliefBatches(
+  batches: BeliefBatch[],
+  options: FlattenBeliefBatchesOptions = {},
+): ExtractedBelief[] {
   if (!Array.isArray(batches)) return [];
   const out: ExtractedBelief[] = [];
-  for (const batch of batches) {
+  for (let index = 0; index < batches.length; index++) {
+    const batch = batches[index];
     if (batch && Array.isArray(batch.beliefs)) {
-      out.push(...batch.beliefs);
+      if (!options.decayByTurn) {
+        out.push(...batch.beliefs);
+        continue;
+      }
+      const turnsAgo = batches.length - 1 - index;
+      for (const belief of batch.beliefs) {
+        out.push({
+          ...belief,
+          confidence: decayConfidence(belief.confidence, turnsAgo),
+        });
+      }
     }
   }
   return out;
+}
+
+/** Aggregate all per-call usage counters in chronological storage order. */
+export function aggregateBatchUsage(batches: BeliefBatch[]): CumulativeTokenUsage {
+  if (!Array.isArray(batches)) return sumTokenUsage([]);
+  return sumTokenUsage(
+    batches.map((batch) => (batch && typeof batch === "object" ? batch.usage : undefined)),
+  );
 }
 
 /**

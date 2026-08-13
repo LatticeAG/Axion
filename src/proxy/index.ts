@@ -17,8 +17,14 @@ import { resolveUpstreamHeaders } from "./auth";
 import { extractAssistantText } from "./content";
 import { runExtraction } from "./extraction";
 import { teeResponseForExtraction } from "./stream";
+import { extractTokenUsage } from "./usage";
 import { handleDashboard } from "./routes";
 import { fetchBeliefs } from "./beliefs";
+import { fetchAllSessionsExport, fetchSessionExport } from "./export";
+import { fetchSearch } from "./search";
+import { fetchSessionMetadata, fetchSessions } from "./sessions";
+import { fetchSessionUsage } from "./sessionUsage";
+import { fetchSessionSse } from "./sse";
 import { matchProvider } from "./providers";
 import type { ProviderAdapter, ProviderId } from "./providers/types";
 import {
@@ -31,6 +37,7 @@ import {
 } from "../polyverdict";
 
 export { SessionDurableObject } from "../state/SessionDurableObject";
+export { SessionRegistryDurableObject } from "../state/SessionRegistryDurableObject";
 
 export default {
   async fetch(
@@ -43,6 +50,39 @@ export default {
 
     if (pathname.startsWith("/api/beliefs/") && request.method === "GET") {
       return fetchBeliefs(request, env, pathname);
+    }
+
+    if (pathname === "/api/search" && request.method === "GET") {
+      return fetchSearch(request, env);
+    }
+
+    if (pathname === "/api/export/all" && request.method === "GET") {
+      return fetchAllSessionsExport(request, env);
+    }
+
+    if (pathname === "/api/sessions" && request.method === "GET") {
+      return fetchSessions(request, env);
+    }
+
+    if (
+      /^\/api\/sessions\/[^/]+\/export\/(json|markdown)$/.test(pathname) &&
+      request.method === "GET"
+    ) {
+      return fetchSessionExport(env, pathname);
+    }
+
+    if (/^\/api\/sessions\/[^/]+\/usage$/.test(pathname) && request.method === "GET") {
+      return fetchSessionUsage(env, pathname);
+    }
+
+    if (/^\/api\/sse\/[^/]+$/.test(pathname) && request.method === "GET") {
+      return fetchSessionSse(request, env, pathname);
+    }
+
+    // Keep nested V2 session routes (for example `/:id/usage` and exports)
+    // available to their dedicated handlers instead of treating them as ids.
+    if (/^\/api\/sessions\/[^/]+$/.test(pathname) && request.method === "GET") {
+      return fetchSessionMetadata(env, pathname);
     }
 
     if (
@@ -162,7 +202,7 @@ async function observeProviderRequest(opts: {
   const isSse =
     isStreaming || contentType.includes("text/event-stream");
 
-  const { response, accumulatedText } = teeResponseForExtraction(
+  const { response, accumulatedText, accumulatedRaw } = teeResponseForExtraction(
     upstreamRes,
     isSse,
     provider.id
@@ -170,13 +210,17 @@ async function observeProviderRequest(opts: {
 
   ctx.waitUntil(
     (async () => {
-      const accumulated = await accumulatedText;
+      const [accumulated, raw] = await Promise.all([accumulatedText, accumulatedRaw]);
       const text = extractAssistantText({
         provider: provider.id,
         isSse,
         accumulated,
       });
-      await runExtraction(env, sessionId, text);
+      await runExtraction(env, sessionId, text, {
+        usage: extractTokenUsage({ provider: provider.id, isSse, raw }),
+        modelName: typeof body.model === "string" ? body.model : undefined,
+        provider: provider.id,
+      });
     })()
   );
 
@@ -233,11 +277,22 @@ async function enforceProviderRequest(opts: {
 
     const raw = await upstreamRes.text();
     lastText = provider.extractAssistantText(raw);
+    const usage = extractTokenUsage({
+      provider: provider.id,
+      isSse: false,
+      raw,
+    });
     const result = enforceOnce(lastText, trigger.schema);
 
     if (result.ok && result.jsonText !== undefined) {
       const delivered = result.jsonText;
-      ctx.waitUntil(runExtraction(env, sessionId, delivered));
+      ctx.waitUntil(
+        runExtraction(env, sessionId, delivered, {
+          usage,
+          modelName: typeof body.model === "string" ? body.model : undefined,
+          provider: provider.id,
+        }),
+      );
       return withSessionHeader(
         buildEnforcedResponse(provider.id, body, delivered),
         sessionId
@@ -260,7 +315,12 @@ async function enforceProviderRequest(opts: {
   }
 
   // Exhausted retries: return 422 with last errors; still extract last text.
-  ctx.waitUntil(runExtraction(env, sessionId, lastText));
+  ctx.waitUntil(
+    runExtraction(env, sessionId, lastText, {
+      modelName: typeof body.model === "string" ? body.model : undefined,
+      provider: provider.id,
+    }),
+  );
   return new Response(
     JSON.stringify({
       error: {

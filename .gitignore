@@ -1,5 +1,35 @@
-node_modules/
-dist/
-.wrangler/
+# Spec, planning, and design artifacts — IP protected, never shipped
+# These live local-only per LatticeAG policy
+SPEC.md
+BUILD-SPEC.md
+SPEC-PolyVerdict.md
+TECHNICAL.md
+PLAN.md
+ARCHITECTURE.md
+DESIGN.md
+ROADMAP.md
+
+# Codex / agent context files (build instructions, not production code)
+.rules
+.codex*
+CODEX_*
+
+# Local dev secrets (templates contain nothing secret but shape is internal)
 .dev.vars
-*.log
+.dev.vars.*
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Wrangler local state
+.wrangler/
+
+# internal artifacts - IP protected, never shipped
+*SPEC*.md
+*REVIEW*.md
+*prompt*.md
+*ROADMAP*.md
+*WHAT-NEXT*.md
+*HANDOFF*.md
+*PROD*.md

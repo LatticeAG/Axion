@@ -9,6 +9,15 @@
 
 import { extractBeliefs } from "../lens/extract";
 import type { Env, ExtractionResult } from "./types";
+import type { TokenUsage } from "./usage";
+
+/** Metadata captured for the model call that produced a belief batch. */
+export interface ExtractionCallMetadata {
+  usage?: TokenUsage;
+  modelName?: string;
+  provider?: "openai" | "anthropic";
+  messageCount?: number;
+}
 
 /**
  * Run belief extraction on a completed response and persist results to the
@@ -21,18 +30,18 @@ import type { Env, ExtractionResult } from "./types";
 export async function runExtraction(
   env: Env,
   sessionId: string,
-  responseText: string
+  responseText: string,
+  metadata: ExtractionCallMetadata = {},
 ): Promise<void> {
-  if (!responseText || !responseText.trim()) return;
-
   let result: ExtractionResult;
   try {
-    const beliefs = await extractBeliefs(responseText, { sessionId });
+    const beliefs = await extractBeliefs(responseText || "", { sessionId });
     result = {
       sessionId,
       beliefs,
-      rawText: responseText,
+      rawText: responseText || "",
       timestamp: Date.now(),
+      ...metadata,
     };
   } catch (err) {
     // Extraction must never break the proxy. Log and bail.

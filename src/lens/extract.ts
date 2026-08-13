@@ -16,6 +16,7 @@ import {
   CONFIDENCE_MARKERS,
   CONFIDENCE_MAX,
   CONFIDENCE_MIN,
+  decayConfidence,
   DEFAULT_CONFIDENCE,
   MARKER_SCAN_RADIUS,
 } from './patterns.js';
@@ -28,6 +29,8 @@ export interface ExtractBeliefsOptions {
   uuid?: () => string;
   /** Inject a custom clock (defaults to Date.now). */
   now?: () => number;
+  /** Number of newer session turns since this text was extracted. */
+  turnsAgo?: number;
 }
 
 /**
@@ -49,12 +52,17 @@ export async function extractBeliefs(
   const timestamp = now();
 
   const rawMatches = scanPatterns(text);
-  const deduped = dedupeOverlaps(rawMatches);
+  const scored = rawMatches.map((match) => ({
+    ...match,
+    confidence: adjustConfidence(
+      BELIEF_PATTERNS[match.patternIndex]!.confidence,
+      surroundingContext(text, match.index, match.fullMatch.length),
+    ),
+  }));
+  const deduped = dedupeOverlaps(scored);
 
   return deduped.map((m) => {
-    const baseline = BELIEF_PATTERNS[m.patternIndex]!.confidence;
-    const context = surroundingContext(text, m.index, m.fullMatch.length);
-    const confidence = adjustConfidence(baseline, context);
+    const confidence = decayConfidence(m.confidence, opts.turnsAgo);
 
     const belief = m.capture.trim();
     const evidence = m.evidence?.trim() || undefined;
@@ -119,22 +127,29 @@ function scanPatterns(text: string): PatternMatch[] {
 }
 
 /**
- * Remove matches whose span is wholly contained within an earlier (by start,
- * then pattern precedence) match's span. This implements the documented
- * "first pattern wins per span" rule: once a region is claimed, nested
- * sub-matches from later patterns are dropped.
+ * Remove intersecting matches, retaining the one with the higher calculated
+ * confidence. Source position and pattern order provide deterministic
+ * tie-breakers. This covers partial overlaps as well as containment.
  */
-function dedupeOverlaps(matches: PatternMatch[]): PatternMatch[] {
-  const out: PatternMatch[] = [];
-  for (const m of matches) {
-    const mEnd = m.index + m.fullMatch.length;
-    const dominated = out.some((kept) => {
-      const kEnd = kept.index + kept.fullMatch.length;
-      return m.index >= kept.index && mEnd <= kEnd;
+function dedupeOverlaps<T extends PatternMatch & { confidence: number }>(matches: T[]): T[] {
+  const ranked = [...matches].sort(
+    (a, b) =>
+      b.confidence - a.confidence ||
+      a.index - b.index ||
+      a.patternIndex - b.patternIndex,
+  );
+  const kept: T[] = [];
+
+  for (const candidate of ranked) {
+    const candidateEnd = candidate.index + candidate.fullMatch.length;
+    const overlaps = kept.some((existing) => {
+      const existingEnd = existing.index + existing.fullMatch.length;
+      return candidate.index < existingEnd && existing.index < candidateEnd;
     });
-    if (!dominated) out.push(m);
+    if (!overlaps) kept.push(candidate);
   }
-  return out;
+
+  return kept.sort((a, b) => a.index - b.index || a.patternIndex - b.patternIndex);
 }
 
 /** Extract a window of ±MARKER_SCAN_RADIUS chars around a match for marker scan. */

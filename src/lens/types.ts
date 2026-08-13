@@ -11,7 +11,15 @@
  */
 
 /** The kind of reasoning fragment that was detected. */
-export type BeliefType = 'causal' | 'assumption' | 'intention' | 'evidence';
+export type BeliefType =
+  | 'causal'
+  | 'assumption'
+  | 'intention'
+  | 'evidence'
+  | 'uncertainty'
+  | 'contradiction'
+  | 'planning'
+  | 'self-correction';
 
 /**
  * Confidence markers apply an additive delta to the pattern baseline, clamped
@@ -39,7 +47,10 @@ export interface ExtractedBelief {
   belief: string;
   /** Cited evidence, if any (e.g. "the error message"). */
   evidence?: string;
-  /** Confidence score in [0.1, 1.0]. Baseline adjusted by confidence markers. */
+  /**
+   * Confidence score in [0, 1]. A type baseline is adjusted by linguistic
+   * markers at extraction time, then may decay as its session turn ages.
+   */
   confidence: number;
   /** If an action was stated alongside the belief, the action text. */
   actionTaken?: string;

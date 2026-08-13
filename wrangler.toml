@@ -8,10 +8,20 @@ compatibility_flags = ["nodejs_compat"]
 name = "SESSION"
 class_name = "SessionDurableObject"
 
-# Migration for the Session Durable Object.
+# Global index used to browse, search, and report on all session metadata.
+[[durable_objects.bindings]]
+name = "SESSION_REGISTRY"
+class_name = "SessionRegistryDurableObject"
+
+# Initial migration for the per-session timeline Durable Object.
 [[migrations]]
 tag = "v1"
 new_classes = ["SessionDurableObject"]
+
+# Adds the global metadata registry without remapping existing session objects.
+[[migrations]]
+tag = "v2"
+new_classes = ["SessionRegistryDurableObject"]
 
 # Static assets for the dashboard (served by the Worker via the ASSETS binding).
 [assets]

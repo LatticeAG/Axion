@@ -159,17 +159,27 @@ export function teeResponseForExtraction(
   response: Response,
   isSse: boolean,
   provider: ProviderId = "openai"
-): { response: Response; accumulatedText: Promise<string> } {
+): {
+  response: Response;
+  accumulatedText: Promise<string>;
+  /** Original decoded response body, retained to read usage-only SSE frames. */
+  accumulatedRaw: Promise<string>;
+} {
   const body = response.body;
   if (!body) {
-    return { response, accumulatedText: Promise.resolve("") };
+    return {
+      response,
+      accumulatedText: Promise.resolve(""),
+      accumulatedRaw: Promise.resolve(""),
+    };
   }
 
   const [callerStream, extractionStream] = body.tee();
   const parseSse = sseParserFor(provider);
 
-  const accumulatedText = (async () => {
+  const accumulated = (async () => {
     let text = "";
+    let raw = "";
     const reader = extractionStream.getReader();
     const decoder = new TextDecoder();
     const parser = new SseLineParser();
@@ -178,6 +188,7 @@ export function teeResponseForExtraction(
         const { done, value } = await reader.read();
         if (done) break;
         const decoded = decoder.decode(value, { stream: true });
+        raw += decoded;
         if (isSse) {
           for (const payload of parser.feed(decoded)) {
             text += parseSse(payload).text;
@@ -190,6 +201,7 @@ export function teeResponseForExtraction(
       // sequence at the end of the stream (decode() without stream: true).
       const tail = decoder.decode();
       if (tail) {
+        raw += tail;
         if (isSse) {
           for (const payload of parser.feed(tail)) {
             text += parseSse(payload).text;
@@ -213,7 +225,7 @@ export function teeResponseForExtraction(
         /* noop */
       }
     }
-    return text;
+    return { text, raw };
   })();
 
   const newResponse = new Response(callerStream, {
@@ -222,5 +234,9 @@ export function teeResponseForExtraction(
     headers: response.headers,
   });
 
-  return { response: newResponse, accumulatedText };
+  return {
+    response: newResponse,
+    accumulatedText: accumulated.then((result) => result.text),
+    accumulatedRaw: accumulated.then((result) => result.raw),
+  };
 }

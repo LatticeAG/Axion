@@ -8,10 +8,15 @@
 export { extractBeliefs } from './extract.js';
 export {
   BELIEF_PATTERNS,
+  BELIEF_TYPE_CONFIDENCE_BASELINES,
+  BELIEF_TYPE_VISUALS,
   CONFIDENCE_MARKERS,
+  CONFIDENCE_DECAY_PER_TURN,
   DEFAULT_CONFIDENCE,
   MARKER_SCAN_RADIUS,
+  decayConfidence,
   type BeliefPattern,
+  type BeliefTypeVisual,
   type ConfidenceMarkerPattern,
 } from './patterns.js';
 export type {
