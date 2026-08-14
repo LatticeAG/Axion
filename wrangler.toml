@@ -16,12 +16,12 @@ class_name = "SessionRegistryDurableObject"
 # Initial migration for the per-session timeline Durable Object.
 [[migrations]]
 tag = "v1"
-new_classes = ["SessionDurableObject"]
+new_sqlite_classes = ["SessionDurableObject"]
 
 # Adds the global metadata registry without remapping existing session objects.
 [[migrations]]
 tag = "v2"
-new_classes = ["SessionRegistryDurableObject"]
+new_sqlite_classes = ["SessionRegistryDurableObject"]
 
 # Static assets for the dashboard (served by the Worker via the ASSETS binding).
 # Worker-first so /dashboard routing and the read APIs own the origin.
