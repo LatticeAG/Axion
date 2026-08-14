@@ -4,6 +4,8 @@
 
 Agent cognitive middleware. A proxy that reads what an agent believes from its own model output, in real time, with no code changes to the agent.
 
+**The open, local-first agent observability + collaboration stack: record, replay, diff, and inspect agent behavior - then plan and ship with humans in the same workspace.**
+
 **by LatticeAG**
 
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-f38020?logo=cloudflare&logoColor=white&labelColor=black)](https://workers.cloudflare.com/)
@@ -255,6 +257,12 @@ axion/
 - Dashboard this cycle is paste-session plus a read-token field and an error banner. Session picker, live SSE, usage, and export buttons are later work.
 
 ---
+
+## How this compares
+
+Hosted platforms like The Context Company, Sentrial, BentoLabs, and Armature detect what agents DID wrong - from traces, tool calls, and post-hoc reconstruction. Axion reads what agents BELIEVED from the model's own streamed output in real time: zero instrumentation, no code changes, no upload. It is the "why" layer their trace pipelines cannot reach, and it feeds into Langfuse, Arize, and Braintrust spans as structured metadata instead of replacing them.
+
+**Everything the new YC agent-observability startups are building - open-sourced, self-hosted, MIT.**
 
 ## Links
 
