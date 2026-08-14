@@ -17,6 +17,32 @@
 import type { BeliefType } from './types.js';
 
 /**
+ * Clause body shared by every bounded capture.
+ *
+ * A '.' only terminates a clause when followed by whitespace or
+ * end-of-input, so dots inside paths/URLs ("/etc/app/config.yaml",
+ * "https://example.com/x.y", "config.yaml") do NOT split a clause.
+ * ';', '!', '?' and newlines always terminate a clause.
+ */
+const CLAUSE_BODY = String.raw`(?:[^.;!?\n]|\.(?!\s|$))`;
+
+/**
+ * Matching clause terminator: ';', '!', '?', a newline, end-of-input, or a
+ * '.' that is followed by whitespace/end-of-input (a real sentence end).
+ */
+const CLAUSE_END = String.raw`(?:[;!?\n]|\.(?=\s|$)|$)`;
+
+/**
+ * Build a case-insensitive clause-bounded pattern from a string source that
+ * interpolates {@link CLAUSE_BODY} for its belief-text captures. All captures
+ * stay non-greedy and length-bounded exactly like the hand-written literals
+ * they replace; `extractBeliefs` adds the `g` flag at scan time.
+ */
+function clausePattern(source: string): RegExp {
+  return new RegExp(source, 'i');
+}
+
+/**
  * The fixed confidence baseline for each reasoning-fragment type.
  *
  * Keeping this table separate from the individual regular expressions makes
@@ -59,7 +85,7 @@ export const BELIEF_TYPE_VISUALS = {
 } as const satisfies Record<BeliefType, BeliefTypeVisual>;
 
 export interface BeliefPattern {
-  /** Case-insensitive regex (use `i` and `m` flags; no `g` - engine adds it). */
+  /** Case-insensitive regex (no `g` flag - the engine adds it). */
   pattern: RegExp;
   type: BeliefType;
   /** Type baseline, duplicated here for easy pattern inspection (0–1). */
@@ -83,7 +109,8 @@ export interface BeliefPattern {
  *     "because X"  → belief = "X"
  *     "if X then Y" → belief = "X"  (assumption), actionGroup captures "Y"
  *   - Capture groups are kept tight (non-greedy, sentence-bounded) so we
- *     don't bleed across clauses. A clause ends at . ; ! ? or a newline.
+ *     don't bleed across clauses. A clause ends at ; ! ? a newline, or a
+ *     '.' that is followed by whitespace/end-of-input - see CLAUSE_BODY.
  *   - All patterns are written without the `g` flag; `extractBeliefs` adds it.
  */
 export const BELIEF_PATTERNS: BeliefPattern[] = [
@@ -96,7 +123,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'based-on',
     type: 'evidence',
-    pattern: /\bbased on (?:the )?([^.;!?\n]{2,120}?)(?:[,.;]|\sthen|$)/i,
+    pattern: clausePattern(String.raw`\bbased on (?:the )?(${CLAUSE_BODY}{2,120}?)(?:[,.;]|\sthen|$)`),
     group: 1,
     evidenceGroup: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.evidence,
@@ -105,7 +132,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'according-to',
     type: 'evidence',
-    pattern: /\baccording to (?:the )?([^.;!?\n]{2,120}?)(?:[,.;]|\sthen|$)/i,
+    pattern: clausePattern(String.raw`\baccording to (?:the )?(${CLAUSE_BODY}{2,120}?)(?:[,.;]|\sthen|$)`),
     group: 1,
     evidenceGroup: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.evidence,
@@ -114,12 +141,13 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'from-the',
     type: 'evidence',
-    pattern: /\bfrom the ([^.;!?\n]{2,120}?)(?:[,.;]|\sthen|$)/i,
+    pattern: clausePattern(String.raw`\bfrom the (${CLAUSE_BODY}{2,120}?)(?:[,.;]|\sthen|$)`),
     group: 1,
     evidenceGroup: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.evidence,
   },
   // "the error says X" / "the error message says X" / "the error indicates X"
+  // Quoted span keeps its original tight class (no bare ';' inside quotes).
   {
     label: 'error-says',
     type: 'evidence',
@@ -136,7 +164,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'because-of',
     type: 'causal',
-    pattern: /\bbecause of\s+([^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\bbecause of\s+(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.causal,
   },
@@ -144,7 +172,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'because',
     type: 'causal',
-    pattern: /\bbecause\s+(?!of\b)([^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\bbecause\s+(?!of\b)(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.causal,
   },
@@ -152,7 +180,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'since-causal',
     type: 'causal',
-    pattern: /\bsince\s+(?!the\s+\d|\d{4})([^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\bsince\s+(?!the\s+\d|\d{4})(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.causal,
   },
@@ -160,7 +188,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'due-to',
     type: 'causal',
-    pattern: /\b(?:due to|as a result of)\s+([^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\b(?:due to|as a result of)\s+(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.causal,
   },
@@ -170,7 +198,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'assuming',
     type: 'assumption',
-    pattern: /\b(?:assuming|presumably)\s+(?:that\s+)?([^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\b(?:assuming|presumably)\s+(?:that\s+)?(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.assumption,
   },
@@ -178,7 +206,15 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'i-assume',
     type: 'assumption',
-    pattern: /\b(?:i(?:'ll| will)|let's|let us) assume\s+(?:that\s+)?([^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\b(?:i(?:'ll| will)|let's|let us) assume\s+(?:that\s+)?(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
+    group: 1,
+    confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.assumption,
+  },
+  // "I'm assuming X" / "I am assuming X" - continuous form of "I assume".
+  {
+    label: 'im-assuming',
+    type: 'assumption',
+    pattern: clausePattern(String.raw`\bi(?:'m| am) assuming\s+(?:that\s+)?(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.assumption,
   },
@@ -186,7 +222,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'if-then',
     type: 'assumption',
-    pattern: /\bif\s+([^,.;!?\n]{2,100}?)\s+then\s+([^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\bif\s+(${CLAUSE_BODY}{2,100}?)\s+then\s+(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
     group: 1,
     actionGroup: 2,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.assumption,
@@ -201,7 +237,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
     // Sequential planning language is handled by the more specific planning
     // patterns below. Keeping it out of this generic intent pattern lets
     // callers see a genuine planning event for "first/next/then I'll ...".
-    pattern: /(?<!first )(?<!next )(?<!then )\b(?:i(?:'ll| will|i'm going to|'m going to)|let me(?!\s+reconsider\b)|i should)\s+([^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`(?<!first )(?<!next )(?<!then )\b(?:i(?:'ll| will|(?:'m| am) going to)|let me(?!\s+reconsider\b)|i should)\s+(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.intention,
   },
@@ -210,7 +246,25 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'i-plan',
     type: 'intention',
-    pattern: /\bi (?:plan|intend)\s+to\s+([^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\bi (?:plan|intend)\s+to\s+(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
+    group: 1,
+    confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.intention,
+  },
+  // Literal belief markers: "I believe X" / "I think X" / "I believe that X".
+  // "I believe" reads as a held conviction about what follows, so it lands in
+  // the intention family rather than next to the assumption patterns.
+  {
+    label: 'i-believe',
+    type: 'intention',
+    pattern: clausePattern(String.raw`\bi believe\s+(?:that\s+)?(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
+    group: 1,
+    confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.intention,
+  },
+  // "I think X" - the other canonical literal belief marker.
+  {
+    label: 'i-think',
+    type: 'intention',
+    pattern: clausePattern(String.raw`\bi think\s+(?:that\s+)?(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.intention,
   },
@@ -221,7 +275,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'uncertainty-hedge',
     type: 'uncertainty',
-    pattern: /\b((?:i(?:'m| am) not sure|it(?:'s| is) unclear|this could be wrong|hard to say|i doubt)(?:\s+[^.;!?\n]{0,120})?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\b((?:i(?:'m| am) not sure|it(?:'s| is) unclear|this could be wrong|hard to say|i doubt)(?:\s+${CLAUSE_BODY}{0,120})?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.uncertainty,
   },
@@ -230,7 +284,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'contradiction-transition',
     type: 'contradiction',
-    pattern: /\b(?:however|but actually|on the other hand|that said|nevertheless)\b(?:[,:]?\s*)([^.;!?\n]{2,140}?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\b(?:however|but actually|on the other hand|that said|nevertheless)\b(?:[,:]?\s*)(${CLAUSE_BODY}{2,140}?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.contradiction,
   },
@@ -239,21 +293,21 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'planning-sequence',
     type: 'planning',
-    pattern: /\b((?:first|next|then)\s*,?\s*i(?:'ll| will)\s+[^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\b((?:first|next|then)\s*,?\s*i(?:'ll| will)\s+${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.planning,
   },
   {
     label: 'planning-step',
     type: 'planning',
-    pattern: /\b(step\s*1(?:\s*[:.-]?\s*[^.;!?\n]{0,120})?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\b(step\s*1(?:\s*[:.-]?\s*${CLAUSE_BODY}{0,120})?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.planning,
   },
   {
     label: 'planning-explicit',
     type: 'planning',
-    pattern: /\b(the plan is\s+[^.;!?\n]{2,120}?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\b(the plan is\s+${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.planning,
   },
@@ -262,21 +316,21 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'self-correction-wait',
     type: 'self-correction',
-    pattern: /\b(wait(?:[,:]?\s+[^.;!?\n]{0,120})?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\b(wait(?:[,:]?\s+${CLAUSE_BODY}{0,120})?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES['self-correction'],
   },
   {
     label: 'self-correction-actually',
     type: 'self-correction',
-    pattern: /\b(actually(?:[,:]?\s+[^.;!?\n]{0,120})?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\b(actually(?:[,:]?\s+${CLAUSE_BODY}{0,120})?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES['self-correction'],
   },
   {
     label: 'self-correction-reconsider',
     type: 'self-correction',
-    pattern: /\b((?:let me reconsider|i made a mistake|upon reflection)(?:[,:]?\s+[^.;!?\n]{0,120})?)(?:[.;!?\n]|$)/i,
+    pattern: clausePattern(String.raw`\b((?:let me reconsider|i made a mistake|upon reflection)(?:[,:]?\s+${CLAUSE_BODY}{0,120})?)${CLAUSE_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES['self-correction'],
   },

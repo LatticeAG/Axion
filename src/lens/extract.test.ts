@@ -322,6 +322,71 @@ describe('extractBeliefs - sessionId stamping', () => {
   });
 });
 
+describe('extractBeliefs - literal belief phrases ("I believe" / "I think")', () => {
+  it('extracts "I believe the user wants X" as an intention', async () => {
+    const beliefs = await extractBeliefs(
+      'I believe the user wants a retry button on the error page',
+      fixedOpts('lit-belief'),
+    );
+    const intent = findByType(beliefs, 'intention');
+    expect(intent.length).toBe(1);
+    expect(intent[0]!.belief).toBe('the user wants a retry button on the error page');
+  });
+
+  it('treats the other literal belief markers consistently', async () => {
+    const text = [
+      'I believe the user wants a retry button.',
+      'I think the user wants a retry button.',
+      "I'm assuming the cache is warm.",
+      'I am assuming the cache is warm.',
+      'I will assume the cache is warm.',
+    ].join('\n');
+    const beliefs = await extractBeliefs(text, fixedOpts('lit-markers'));
+    // Note: "I will assume X" is claimed by the higher-confidence generic
+    // "I will X" intention (0.8 > 0.5), so it lands in intention with its
+    // "assume ..." text - pre-existing ranking behaviour, kept as-is.
+    expect(findByType(beliefs, 'intention').length).toBe(3);
+    expect(findByType(beliefs, 'assumption').length).toBe(2);
+    expect(beliefs.map((b) => b.belief)).toContain('the cache is warm');
+  });
+});
+
+describe('extractBeliefs - dot is not a clause end inside paths/URLs', () => {
+  it('keeps a dotted file path intact in an assumption', async () => {
+    const beliefs = await extractBeliefs(
+      'Assuming the config file is at /etc/app/config.yaml',
+      fixedOpts('dot-path'),
+    );
+    const assumption = findByType(beliefs, 'assumption');
+    expect(assumption.length).toBe(1);
+    expect(assumption[0]!.belief).toBe('the config file is at /etc/app/config.yaml');
+    expect(assumption[0]!.belief).toContain('/etc/app/config.yaml');
+  });
+
+  it('keeps a URL with dots intact in an assumption', async () => {
+    const beliefs = await extractBeliefs(
+      'Assuming the endpoint is https://example.com/x.y for now.',
+      fixedOpts('dot-url'),
+    );
+    const assumption = findByType(beliefs, 'assumption');
+    expect(assumption.length).toBe(1);
+    expect(assumption[0]!.belief).toContain('https://example.com/x.y');
+  });
+
+  it('still ends a clause at a sentence-final period', async () => {
+    const beliefs = await extractBeliefs(
+      'Assuming the config is loaded. I will restart the service.',
+      fixedOpts('dot-sentence'),
+    );
+    const assumption = findByType(beliefs, 'assumption');
+    expect(assumption.length).toBe(1);
+    expect(assumption[0]!.belief).toBe('the config is loaded');
+    const intent = findByType(beliefs, 'intention');
+    expect(intent.length).toBe(1);
+    expect(intent[0]!.belief).toBe('restart the service');
+  });
+});
+
 describe('extractBeliefs - belief shape', () => {
   it('stamps id, timestamp, rawText and line', async () => {
     const beliefs = await extractBeliefs(
