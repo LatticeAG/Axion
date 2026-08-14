@@ -21,7 +21,7 @@ function makeEnv(received: ExtractionResult[]): Env {
 describe("runExtraction", () => {
   it("persists model metadata and canonical per-call usage with beliefs", async () => {
     const received: ExtractionResult[] = [];
-    await runExtraction(
+    const stored = await runExtraction(
       makeEnv(received),
       "session-usage",
       "I will inspect the logs.",
@@ -29,8 +29,12 @@ describe("runExtraction", () => {
         usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 },
         modelName: "gpt-test",
         provider: "openai",
+        waitUntil: (promise) => {
+          void promise;
+        },
       },
     );
+    expect(stored).toEqual({ stored: true });
 
     expect(received).toHaveLength(1);
     expect(received[0]).toMatchObject({
@@ -39,7 +43,23 @@ describe("runExtraction", () => {
       provider: "openai",
       usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 },
     });
+    expect(received[0]).not.toHaveProperty("waitUntil");
     expect(received[0]!.beliefs).toHaveLength(1);
+  });
+
+  it("redacts secrets before the Durable Object store", async () => {
+    const received: ExtractionResult[] = [];
+    await runExtraction(
+      makeEnv(received),
+      "secret-session",
+      "Because sk-ant-api03-TEST failed the request.",
+    );
+
+    expect(received).toHaveLength(1);
+    const body = JSON.stringify(received[0]);
+    expect(body).not.toContain("sk-ant-api03-TEST");
+    expect(received[0]?.redactions).toBeGreaterThan(0);
+    expect(received[0]?.rawText).toContain("[REDACTED:anthropic_key]");
   });
 
   it("still persists an empty belief batch when a call only has usage", async () => {
@@ -56,5 +76,6 @@ describe("runExtraction", () => {
       rawText: "",
       usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
     });
+    expect(received[0]!.actions).toEqual([]);
   });
 });

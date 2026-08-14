@@ -1,2 +1,11 @@
 UPSTREAM_API_URL=https://api.openai.com
+# UPSTREAM_OPENAI_URL=https://api.openai.com
+# UPSTREAM_ANTHROPIC_URL=https://api.anthropic.com
 # UPSTREAM_API_KEY=  # optional if agents pass their own keys
+# AXION_READ_TOKEN=replace-me
+# AXION_OPEN_READ=true
+# AXION_CORS_ORIGIN=http://localhost:8787
+# AXION_CURSOR_SECRET=replace-me
+# AXION_BELIEF_WEBHOOK_URL=
+# AXION_WEBHOOK_SECRET=
+# AXION_WEBHOOK_ALLOW_UNSIGNED=true

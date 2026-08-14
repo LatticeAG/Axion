@@ -26,6 +26,7 @@ function makeEnv(
   } as unknown as DurableObjectStub;
   const env = {
     UPSTREAM_API_URL: "https://api.openai.com",
+    AXION_OPEN_READ: "true",
     SESSION: {} as DurableObjectNamespace,
     SESSION_REGISTRY: {
       idFromName: (name: string) => {
@@ -58,7 +59,7 @@ describe("fetchSessions", () => {
     expect(target.searchParams.get("limit")).toBe("20");
     expect(target.searchParams.get("cursor")).toBe("cursor-value");
     expect(response.headers.get("Content-Type")).toBe("application/json");
-    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(await response.json()).toEqual({ sessions: [], nextCursor: null });
   });
@@ -85,7 +86,11 @@ describe("fetchSessionMetadata", () => {
       new Response(JSON.stringify({ id: "a/b" }), { status: 200 }),
     );
 
-    const response = await fetchSessionMetadata(env, "/api/sessions/a%2Fb");
+    const response = await fetchSessionMetadata(
+      new Request("https://worker.example/api/sessions/a%2Fb"),
+      env,
+      "/api/sessions/a%2Fb",
+    );
 
     expect(response.status).toBe(200);
     expect(new URL(seenRequests[0]!.url).pathname).toBe("/session/a%2Fb");
@@ -95,7 +100,11 @@ describe("fetchSessionMetadata", () => {
   it("does not let a nested route be mistaken for session metadata", async () => {
     const { env, seenRequests } = makeEnv(() => new Response("unexpected"));
 
-    const response = await fetchSessionMetadata(env, "/api/sessions/a/usage");
+    const response = await fetchSessionMetadata(
+      new Request("https://worker.example/api/sessions/a/usage"),
+      env,
+      "/api/sessions/a/usage",
+    );
 
     expect(response.status).toBe(400);
     expect(seenRequests).toEqual([]);

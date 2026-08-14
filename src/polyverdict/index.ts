@@ -1,12 +1,8 @@
 /**
  * PolyVerdict v1 - public entrypoint.
  *
- * Opt-in structured-output enforcement for the Axion proxy. Import surface:
- *
- *   import {
- *     detectSchemaTrigger, enforceOnce, buildRetryMessages,
- *     validateAndCoerce, parseJsonFromAssistant, MAX_ENFORCE_ATTEMPTS,
- *   } from 'axion/polyverdict';
+ * Opt-in structured-output enforcement for the Axion proxy. Import from
+ * this in-repo module. There is no published `axion/polyverdict` package.
  */
 
 export {

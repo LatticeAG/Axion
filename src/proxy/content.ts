@@ -26,8 +26,10 @@ export function extractOpenAIAssistantText(rawBody: string): string {
     return "";
   }
 
-  const content = (json as any)?.choices?.[0]?.message?.content;
-  return contentToText(content);
+  if (!isRecord(json) || !Array.isArray(json.choices)) return "";
+  const first = json.choices[0];
+  if (!isRecord(first) || !isRecord(first.message)) return "";
+  return contentToText(first.message.content);
 }
 
 /**
@@ -42,7 +44,8 @@ export function extractAnthropicAssistantText(rawBody: string): string {
     return "";
   }
 
-  const content = (json as any)?.content;
+  if (!isRecord(json)) return "";
+  const content = json.content;
   if (!Array.isArray(content)) {
     // Some payloads may carry a bare string content; be lenient.
     return typeof content === "string" ? content : "";
@@ -50,7 +53,7 @@ export function extractAnthropicAssistantText(rawBody: string): string {
 
   let text = "";
   for (const block of content) {
-    if (block && block.type === "text" && typeof block.text === "string") {
+    if (isRecord(block) && block.type === "text" && typeof block.text === "string") {
       text += block.text;
     }
   }
@@ -94,9 +97,13 @@ function contentToText(content: unknown): string {
   for (const part of content) {
     if (typeof part === "string") {
       text += part;
-    } else if (part && typeof part.text === "string") {
+    } else if (isRecord(part) && typeof part.text === "string") {
       text += part.text;
     }
   }
   return text;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

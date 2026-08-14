@@ -1,4 +1,4 @@
-# Spec, planning, and design artifacts — IP protected, never shipped
+# Spec, planning, and design artifacts. IP protected, never shipped.
 # These live local-only per LatticeAG policy
 SPEC.md
 BUILD-SPEC.md
@@ -14,9 +14,10 @@ ROADMAP.md
 .codex*
 CODEX_*
 
-# Local dev secrets (templates contain nothing secret but shape is internal)
+# Local dev secrets. .dev.vars.example is committed intentionally as the template.
 .dev.vars
-.dev.vars.*
+.dev.vars.local
+.dev.vars.production
 
 # Node
 node_modules/

@@ -8,8 +8,11 @@
  */
 
 import { extractBeliefs } from "../lens/extract";
-import type { Env, ExtractionResult } from "./types";
+import { redactSecrets } from "../redact/secrets";
+import { linkActionsToBeliefs, type ObservedAction } from "./actions";
+import type { Belief, Env, ExtractionResult } from "./types";
 import type { TokenUsage } from "./usage";
+import { parseStoreResponse, sendWebhook } from "./webhook";
 
 /** Metadata captured for the model call that produced a belief batch. */
 export interface ExtractionCallMetadata {
@@ -17,6 +20,9 @@ export interface ExtractionCallMetadata {
   modelName?: string;
   provider?: "openai" | "anthropic";
   messageCount?: number;
+  inboundMessageCount?: number;
+  waitUntil?: (p: Promise<unknown>) => void;
+  actions?: ObservedAction[];
 }
 
 /**
@@ -32,27 +38,32 @@ export async function runExtraction(
   sessionId: string,
   responseText: string,
   metadata: ExtractionCallMetadata = {},
-): Promise<void> {
+): Promise<{ stored: boolean }> {
   let result: ExtractionResult;
   try {
     const beliefs = await extractBeliefs(responseText || "", { sessionId });
+    const actions = Array.isArray(metadata.actions) ? metadata.actions : [];
+    const linked = linkActionsToBeliefs(beliefs, actions);
+    const redacted = redactExtraction(responseText || "", linked);
+    const { waitUntil, ...persistMeta } = metadata;
+    void waitUntil;
     result = {
       sessionId,
-      beliefs,
-      rawText: responseText || "",
+      beliefs: redacted.beliefs,
+      rawText: redacted.rawText,
       timestamp: Date.now(),
-      ...metadata,
+      redactions: redacted.redactions,
+      ...persistMeta,
+      actions,
     };
   } catch (err) {
-    // Extraction must never break the proxy. Log and bail.
     console.error(
       "axion: belief extraction failed",
       err instanceof Error ? err.message : String(err)
     );
-    return;
+    return { stored: false };
   }
 
-  // Persist to the Durable Object for this session.
   try {
     const id = env.SESSION.idFromName(sessionId);
     const stub = env.SESSION.get(id);
@@ -67,11 +78,56 @@ export async function runExtraction(
         doResponse.status,
         await doResponse.text().catch(() => "<no body>")
       );
+      return { stored: false };
     }
+    let callsInSession = 0;
+    try {
+      const parsed = parseStoreResponse(await doResponse.json());
+      callsInSession = parsed.callsInSession;
+    } catch {
+      callsInSession = 0;
+    }
+    if (env.AXION_BELIEF_WEBHOOK_URL?.trim() && metadata.waitUntil) {
+      metadata.waitUntil(sendWebhook(env, result, callsInSession));
+    }
+    return { stored: true };
   } catch (err) {
     console.error(
       "axion: DO store threw",
       err instanceof Error ? err.message : String(err)
     );
+    return { stored: false };
   }
+}
+
+/** Redact secrets on persist fields. Never log the matched secret. */
+function redactExtraction(
+  rawText: string,
+  beliefs: Belief[],
+): { rawText: string; beliefs: Belief[]; redactions: number } {
+  const redactedRaw = redactSecrets(rawText);
+  let redactions = redactedRaw.hits;
+  const nextBeliefs = beliefs.map((belief) => {
+    const beliefText = redactSecrets(belief.belief);
+    redactions += beliefText.hits;
+    const surrounding = redactSecrets(belief.rawText);
+    redactions += surrounding.hits;
+    const next: Belief = {
+      ...belief,
+      belief: beliefText.text,
+      rawText: surrounding.text,
+    };
+    if (belief.evidence) {
+      const evidence = redactSecrets(belief.evidence);
+      redactions += evidence.hits;
+      next.evidence = evidence.text;
+    }
+    if (belief.actionTaken) {
+      const actionTaken = redactSecrets(belief.actionTaken);
+      redactions += actionTaken.hits;
+      next.actionTaken = actionTaken.text;
+    }
+    return next;
+  });
+  return { rawText: redactedRaw.text, beliefs: nextBeliefs, redactions };
 }

@@ -71,6 +71,7 @@ function BeliefCard({ belief }) {
 }
 
 const SESSION_STORAGE_KEY = 'axion.sessionId';
+const READ_TOKEN_KEY = 'axion.readToken';
 
 function readStoredSession() {
   try {
@@ -88,6 +89,29 @@ function persistSession(sessionId) {
   }
 }
 
+function readStoredToken() {
+  try {
+    return sessionStorage.getItem(READ_TOKEN_KEY) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function persistReadToken(token) {
+  try {
+    if (token) sessionStorage.setItem(READ_TOKEN_KEY, token);
+    else sessionStorage.removeItem(READ_TOKEN_KEY);
+  } catch (e) {
+    /* sessionStorage unavailable - non-fatal */
+  }
+}
+
+function stripSecrets(text, token) {
+  let next = String(text || '');
+  if (token) next = next.split(token).join('[redacted]');
+  return next.replace(/readToken=[^&\s]+/gi, 'readToken=[redacted]');
+}
+
 function initialSessionId() {
   const fromUrl = new URLSearchParams(window.location.search).get('session');
   if (fromUrl && fromUrl.trim()) return fromUrl.trim();
@@ -97,38 +121,56 @@ function initialSessionId() {
 function App() {
   const [beliefs, setBeliefs] = useState([]);
   const [sessionInput, setSessionInput] = useState('');
+  const [readToken, setReadToken] = useState(readStoredToken);
   const [activeSession, setActiveSession] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [minConfidence, setMinConfidence] = useState(0);
   const [lowConfidenceOnly, setLowConfidenceOnly] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
 
-  const loadBeliefs = useCallback((sessionId) => {
+  const loadBeliefs = useCallback((sessionId, token) => {
     if (!sessionId) return;
     setActiveSession(sessionId);
     setLoading(true);
-    fetch(`/api/beliefs/${encodeURIComponent(sessionId)}`)
-      .then(r => r.json())
-      .then(data => {
+    setLoadError('');
+    const headers = {};
+    if (token) headers['x-axion-read-token'] = token;
+    fetch(`/api/beliefs/${encodeURIComponent(sessionId)}`, { headers })
+      .then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          const message = (data && data.error && data.error.message)
+            ? data.error.message
+            : `HTTP ${r.status}`;
+          throw new Error(message);
+        }
         setBeliefs(data.beliefs || []);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch((err) => {
+        const raw = err && err.message ? err.message : 'Failed to load beliefs';
+        setLoadError(stripSecrets(raw, token));
+        setBeliefs([]);
+        setLoading(false);
+      });
   }, []);
 
   const handleLoad = useCallback(() => {
     const sessionId = sessionInput.trim();
     if (!sessionId) return;
     persistSession(sessionId);
-    loadBeliefs(sessionId);
-  }, [sessionInput, loadBeliefs]);
+    persistReadToken(readToken.trim());
+    loadBeliefs(sessionId, readToken.trim());
+  }, [sessionInput, readToken, loadBeliefs]);
 
   useEffect(() => {
     const initial = initialSessionId();
+    const token = readStoredToken();
     if (initial) {
       setSessionInput(initial);
       persistSession(initial);
-      loadBeliefs(initial);
+      loadBeliefs(initial, token);
     }
   }, [loadBeliefs]);
 
@@ -172,6 +214,15 @@ function App() {
           autoComplete: 'off',
           onChange: e => setSessionInput(e.target.value),
         }),
+        React.createElement('input', {
+          type: 'password',
+          className: 'filter-input session-input',
+          placeholder: 'Read token (sessionStorage)',
+          value: readToken,
+          spellCheck: false,
+          autoComplete: 'off',
+          onChange: e => setReadToken(e.target.value),
+        }),
         React.createElement('button', {
           type: 'submit',
           className: 'session-load-btn',
@@ -179,6 +230,7 @@ function App() {
         }, 'Load')
       )
     ),
+    loadError && React.createElement('div', { className: 'error-banner', role: 'alert' }, loadError),
     // Stats
     beliefs.length > 0 && React.createElement('div', { className: 'stats' },
       React.createElement(Stat, { value: beliefs.length, label: 'Total Beliefs' }),

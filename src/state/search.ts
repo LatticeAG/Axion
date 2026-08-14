@@ -1,11 +1,10 @@
 /**
  * Pure helpers for the cross-session belief search API.
  *
- * Search deliberately uses an opaque, query-bound cursor.  The cursor retains
- * the registry page that is currently being scanned and the belief offset in
- * its first unprocessed session.  That lets the Worker resume an expensive
- * cross-session search without re-scanning sessions already returned to the
- * caller.
+ * Search uses an opaque, query-bound cursor. The cursor stores the registry
+ * page still to scan and the belief offset in each pending session id. Resume
+ * rehydrates those ids from the registry so the wire payload never carries
+ * SessionMetadata or token totals.
  */
 
 import type { BeliefType, ExtractedBelief } from "../lens/types.js";
@@ -33,9 +32,9 @@ export interface SearchResult {
   belief: ExtractedBelief;
 }
 
-/** A registry entry still to be searched when a page ends. */
+/** A registry entry still to be searched when a page ends. Compact on the wire. */
 export interface SearchCursorPendingSession {
-  session: SearchSessionMetadata;
+  id: string;
   /** Index into that session's descending-by-time belief list. */
   beliefOffset: number;
 }
@@ -51,6 +50,9 @@ export interface SearchCursorState {
   registryExhausted: boolean;
   pending: SearchCursorPendingSession[];
 }
+
+/** Cap on pending ids stored in one cursor, matching the G18 scan ceiling. */
+export const MAX_CURSOR_PENDING = 200;
 
 export type ParseSearchFiltersResult =
   | { ok: true; filters: SearchFilters; cursor?: string }
@@ -146,56 +148,104 @@ export function searchFingerprint(filters: Omit<SearchFilters, "limit"> | Search
   });
 }
 
-/** Encode a validated cursor state as URL-safe base64 JSON. */
-export function encodeSearchCursor(state: SearchCursorState): string {
-  return toBase64Url(JSON.stringify(state));
+/**
+ * Encode compact cursor state. Wire format is
+ * `base64url(json).base64url(raw-hmac-bytes)` so the MAC is not JSON-embeddable.
+ * HMAC-SHA256 uses AXION_CURSOR_SECRET only, never AXION_READ_TOKEN.
+ */
+export async function encodeSearchCursor(state: SearchCursorState, secret: string): Promise<string> {
+  const trimmed = secret.trim();
+  if (!trimmed) {
+    throw new Error("Search cursor signing is not configured");
+  }
+
+  const payload: Record<string, unknown> = {
+    v: SEARCH_CURSOR_VERSION,
+    fp: state.fingerprint,
+  };
+  if (state.registryCursor) payload.rc = state.registryCursor;
+  payload.rx = state.registryExhausted;
+  payload.p = state.pending.map((entry) => ({ id: entry.id, o: entry.beliefOffset }));
+
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(payload));
+  const mac = await hmacSha256(trimmed, jsonBytes);
+  return `${toBase64UrlBytes(jsonBytes)}.${toBase64UrlBytes(mac)}`;
 }
 
 /**
- * Decode and validate an opaque cursor. Its filter fingerprint must equal the
- * current request's fingerprint; otherwise returning a page could silently
- * skip or duplicate results.
+ * Decode and validate a signed compact cursor. Its filter fingerprint must
+ * equal the current request's fingerprint; otherwise returning a page could
+ * silently skip or duplicate results. Unsigned or mismatched MACs are rejected.
  */
-export function decodeSearchCursor(
+export async function decodeSearchCursor(
   cursor: string,
-  filters: Omit<SearchFilters, "limit"> | SearchFilters
-): DecodeSearchCursorResult {
+  filters: Omit<SearchFilters, "limit"> | SearchFilters,
+  secret: string,
+): Promise<DecodeSearchCursorResult> {
+  const trimmedSecret = secret.trim();
+  if (!trimmedSecret) {
+    return { ok: false, message: "Search cursor signing is not configured" };
+  }
   if (cursor.length > 16_384) {
     return { ok: false, message: "Search cursor is too large" };
   }
 
-  let value: unknown;
+  const separator = cursor.indexOf(".");
+  if (separator <= 0 || cursor.indexOf(".", separator + 1) !== -1) {
+    return { ok: false, message: "Invalid search cursor" };
+  }
+  const payloadB64 = cursor.slice(0, separator);
+  const macB64 = cursor.slice(separator + 1);
+  if (!payloadB64 || !macB64) {
+    return { ok: false, message: "Invalid search cursor" };
+  }
+
+  let jsonBytes: Uint8Array;
+  let macBytes: Uint8Array;
   try {
-    value = JSON.parse(fromBase64Url(cursor));
+    jsonBytes = fromBase64UrlBytes(payloadB64);
+    macBytes = fromBase64UrlBytes(macB64);
   } catch {
     return { ok: false, message: "Invalid search cursor" };
   }
 
-  if (!isRecord(value) || value.version !== SEARCH_CURSOR_VERSION) {
-    return { ok: false, message: "Invalid search cursor" };
-  }
-  if (typeof value.fingerprint !== "string" || value.fingerprint !== searchFingerprint(filters)) {
-    return { ok: false, message: "Search cursor does not match this query" };
-  }
-  if (
-    value.registryCursor !== undefined &&
-    (typeof value.registryCursor !== "string" || !value.registryCursor)
-  ) {
-    return { ok: false, message: "Invalid search cursor" };
-  }
-  if (typeof value.registryExhausted !== "boolean") {
-    return { ok: false, message: "Invalid search cursor" };
-  }
-  if (!Array.isArray(value.pending) || value.pending.length > MAX_SEARCH_LIMIT) {
+  const expectedMac = await hmacSha256(trimmedSecret, jsonBytes);
+  if (!timingSafeEqualBytes(macBytes, expectedMac)) {
     return { ok: false, message: "Invalid search cursor" };
   }
 
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(jsonBytes));
+  } catch {
+    return { ok: false, message: "Invalid search cursor" };
+  }
+
+  if (!isRecord(value) || value.v !== SEARCH_CURSOR_VERSION) {
+    return { ok: false, message: "Invalid search cursor" };
+  }
+  if (typeof value.fp !== "string" || value.fp !== searchFingerprint(filters)) {
+    return { ok: false, message: "Search cursor does not match this query" };
+  }
+  if (value.rc !== undefined && (typeof value.rc !== "string" || !value.rc)) {
+    return { ok: false, message: "Invalid search cursor" };
+  }
+  if (typeof value.rx !== "boolean") {
+    return { ok: false, message: "Invalid search cursor" };
+  }
+  if (!Array.isArray(value.p) || value.p.length > MAX_CURSOR_PENDING) {
+    return { ok: false, message: "Invalid search cursor" };
+  }
+
+  const fingerprint = value.fp;
+  const registryExhausted = value.rx;
+  const registryCursor = typeof value.rc === "string" ? value.rc : undefined;
   const pending: SearchCursorPendingSession[] = [];
-  for (const candidate of value.pending) {
-    if (!isRecord(candidate) || !isSearchSessionMetadata(candidate.session)) {
+  for (const candidate of value.p) {
+    if (!isRecord(candidate) || !isNonEmptyString(candidate.id)) {
       return { ok: false, message: "Invalid search cursor" };
     }
-    const beliefOffset = candidate.beliefOffset;
+    const beliefOffset = candidate.o;
     if (
       typeof beliefOffset !== "number" ||
       !Number.isSafeInteger(beliefOffset) ||
@@ -204,7 +254,7 @@ export function decodeSearchCursor(
       return { ok: false, message: "Invalid search cursor" };
     }
     pending.push({
-      session: candidate.session,
+      id: candidate.id,
       beliefOffset,
     });
   }
@@ -213,9 +263,9 @@ export function decodeSearchCursor(
     ok: true,
     state: {
       version: SEARCH_CURSOR_VERSION,
-      fingerprint: value.fingerprint,
-      registryCursor: value.registryCursor,
-      registryExhausted: value.registryExhausted,
+      fingerprint,
+      registryCursor,
+      registryExhausted,
       pending,
     },
   };
@@ -328,17 +378,36 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function toBase64Url(value: string): string {
-  const bytes = new TextEncoder().encode(value);
+async function hmacSha256(secret: string, data: Uint8Array): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, data);
+  return new Uint8Array(signature);
+}
+
+function timingSafeEqualBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  let diff = 0;
+  for (let index = 0; index < left.byteLength; index++) {
+    diff |= left[index]! ^ right[index]!;
+  }
+  return diff === 0;
+}
+
+function toBase64UrlBytes(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-function fromBase64Url(value: string): string {
+function fromBase64UrlBytes(value: string): Uint8Array {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("not base64url");
   const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (value.length % 4)) % 4);
   const binary = atob(padded);
-  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }

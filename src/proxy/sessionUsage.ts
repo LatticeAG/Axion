@@ -7,6 +7,9 @@
  */
 
 import type { Env } from "./types";
+import { applyCors, jsonErrorResponse } from "./cors";
+import { requireReadAuth } from "./readAuth";
+import { enforceReadRateLimit } from "./rateLimit";
 
 /** Extract one decoded id segment from `/api/sessions/:id/usage`. */
 export function extractSessionUsageId(pathname: string): string | null {
@@ -22,11 +25,18 @@ export function extractSessionUsageId(pathname: string): string | null {
 
 /** GET /api/sessions/:id/usage → cumulative session counters from SessionDO. */
 export async function fetchSessionUsage(
+  request: Request,
   env: Env,
   pathname: string,
 ): Promise<Response> {
+  const auth = requireReadAuth(request, env);
+  if (!auth.ok) return auth.response;
+
+  const limited = await enforceReadRateLimit(request, env, "read");
+  if (limited) return limited;
+
   const sessionId = extractSessionUsageId(pathname);
-  if (!sessionId) return jsonError(400, "Missing session ID in path");
+  if (!sessionId) return jsonErrorResponse(request, env, 400, "Missing session ID in path");
 
   try {
     const id = env.SESSION.idFromName(sessionId);
@@ -36,30 +46,21 @@ export async function fetchSessionUsage(
     );
     const headers = new Headers(response.headers);
     headers.set("Content-Type", "application/json");
-    headers.set("Access-Control-Allow-Origin", "*");
     headers.set("Cache-Control", "no-store");
+    applyCors(request, env, headers);
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
       headers,
     });
   } catch (error) {
-    return jsonError(
+    return jsonErrorResponse(
+      request,
+      env,
       502,
       `Failed to reach session state: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
   }
-}
-
-function jsonError(status: number, message: string): Response {
-  return new Response(JSON.stringify({ error: { message } }), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "no-store",
-    },
-  });
 }

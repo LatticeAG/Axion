@@ -8,6 +8,9 @@
 
 import { SSE_RESPONSE_HEADERS } from "../state/sse.js";
 import type { Env } from "./types";
+import { applyCors, jsonErrorResponse } from "./cors";
+import { requireReadAuth } from "./readAuth";
+import { enforceReadRateLimit } from "./rateLimit";
 
 /** Extract one decoded session id from `/api/sse/:sessionId`. */
 export function extractSseSessionId(pathname: string): string | null {
@@ -27,25 +30,32 @@ export function extractSseSessionId(pathname: string): string | null {
  * Returns a pass-through `text/event-stream` response from the session DO.
  * Do not await or inspect `response.body`: doing so would consume the live
  * stream and prevent EventSource clients from receiving future beliefs.
+ * EventSource cannot set headers, so `?readToken=` is accepted here only.
  */
 export async function fetchSessionSse(
   request: Request,
   env: Env,
   pathname: string,
 ): Promise<Response> {
+  const auth = requireReadAuth(request, env);
+  if (!auth.ok) return auth.response;
+
+  const limited = await enforceReadRateLimit(request, env, "read");
+  if (limited) return limited;
+
   const sessionId = extractSseSessionId(pathname);
-  if (!sessionId) return jsonError(400, "Missing session ID in path");
+  if (!sessionId) return jsonErrorResponse(request, env, 400, "Missing session ID in path");
 
   let response: Response;
   try {
     const id = env.SESSION.idFromName(sessionId);
     const stub = env.SESSION.get(id);
     const target = `https://internal/sse?sessionId=${encodeURIComponent(sessionId)}`;
-    // Passing the original signal lets a disconnected browser detach from the
-    // DO immediately rather than waiting for the stream to be garbage-collected.
     response = await stub.fetch(new Request(target, { signal: request.signal }));
   } catch (error) {
-    return jsonError(
+    return jsonErrorResponse(
+      request,
+      env,
       502,
       `Failed to reach session state: ${
         error instanceof Error ? error.message : String(error)
@@ -59,25 +69,12 @@ export async function fetchSessionSse(
       headers.set(name, value);
     }
   } else {
-    // An internal error is not an event stream. Preserve its content type but
-    // still make it safe for a browser client to inspect and avoid caching it.
-    headers.set("Access-Control-Allow-Origin", "*");
     headers.set("Cache-Control", "no-cache, no-transform");
   }
+  applyCors(request, env, headers);
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers,
-  });
-}
-
-function jsonError(status: number, message: string): Response {
-  return new Response(JSON.stringify({ error: { message } }), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "no-cache, no-transform",
-    },
   });
 }

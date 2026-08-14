@@ -14,7 +14,6 @@ import type { ExtractedBelief } from "../lens/types.js";
 export const SSE_RESPONSE_HEADERS: Readonly<Record<string, string>> = {
   "Content-Type": "text/event-stream; charset=utf-8",
   "Cache-Control": "no-cache, no-transform",
-  "Access-Control-Allow-Origin": "*",
   "X-Accel-Buffering": "no",
 };
 

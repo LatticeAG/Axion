@@ -2,17 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { ExtractedBelief } from "../lens/types";
 import type { ExtractionResult } from "../proxy/types";
 import { SessionDurableObject } from "./SessionDurableObject";
+import { createMemoryDurableObjectState } from "./memoryDurableObject";
 
 function makeState() {
-  const values = new Map<string, unknown>();
-  return {
-    storage: {
-      get: async <T>(key: string): Promise<T | undefined> => values.get(key) as T | undefined,
-      put: async (key: string, value: unknown): Promise<void> => {
-        values.set(key, value);
-      },
-    },
-  } as unknown as DurableObjectState;
+  return createMemoryDurableObjectState();
 }
 
 function belief(id: string): ExtractedBelief {

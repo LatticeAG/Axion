@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ExtractedBelief } from "../lens/types";
 import type { BeliefBatch } from "../state/sessionBeliefs";
 import type { SessionMetadata } from "../state/sessionRegistry";
@@ -10,6 +10,7 @@ import {
   sessionExportFilename,
   type SessionStateExportSnapshot,
 } from "./export";
+import { MemoryRateLimitCache, setRateLimitCacheForTests } from "./rateLimit";
 import type { Env } from "./types";
 
 function metadata(id: string, updatedAt = 2_000): SessionMetadata {
@@ -137,6 +138,7 @@ function makeEnv(options: FixtureOptions = {}) {
   return {
     env: {
       UPSTREAM_API_URL: "https://upstream.example",
+      AXION_OPEN_READ: "true",
       SESSION: sessionNamespace,
       SESSION_REGISTRY: registryNamespace,
       ASSETS: {} as Fetcher,
@@ -175,6 +177,7 @@ describe("fetchSessionExport", () => {
     });
 
     const response = await fetchSessionExport(
+      new Request("https://worker.example/api/sessions/run%2Fone/export/json"),
       fixture.env,
       "/api/sessions/run%2Fone/export/json",
     );
@@ -192,7 +195,7 @@ describe("fetchSessionExport", () => {
     expect(response.headers.get("Content-Disposition")).toBe(
       'attachment; filename="axion-session-run-one.json"',
     );
-    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(fixture.registryRequests[0]?.pathname).toBe("/session/run%2Fone");
     expect(fixture.sessionRequests[0]?.url.toString()).toBe(
@@ -209,11 +212,38 @@ describe("fetchSessionExport", () => {
     });
     expect(body.usage.total_tokens).toBe(18);
     expect(body.calls).toBe(1);
+    expect(body.batches[0]?.rawText).toBe("");
+    expect(body.beliefs[0]?.rawText).toBe("");
+  });
+
+  it("includes batch rawText only when includeRaw=1, and never in Markdown", async () => {
+    const fixture = makeEnv();
+    const withRaw = await fetchSessionExport(
+      new Request("https://worker.example/api/sessions/run-1/export/json?includeRaw=1"),
+      fixture.env,
+      "/api/sessions/run-1/export/json",
+    );
+    const withRawBody = (await withRaw.json()) as {
+      batches: BeliefBatch[];
+      beliefs: ExtractedBelief[];
+    };
+    expect(withRawBody.batches[0]?.rawText).toBe("Because the access token expired.");
+    expect(withRawBody.beliefs[0]?.rawText).toBe("");
+
+    const markdown = await fetchSessionExport(
+      new Request("https://worker.example/api/sessions/run-1/export/markdown?includeRaw=1"),
+      fixture.env,
+      "/api/sessions/run-1/export/markdown",
+    );
+    const text = await markdown.text();
+    expect(text).not.toContain("Because the access token expired.");
+    expect(text).toContain("- Belief: the access token expired");
   });
 
   it("returns a deterministic human-readable Markdown report", async () => {
     const fixture = makeEnv();
     const response = await fetchSessionExport(
+      new Request("https://worker.example/api/sessions/run-1/export/markdown"),
       fixture.env,
       "/api/sessions/run-1/export/markdown",
     );
@@ -229,6 +259,7 @@ describe("fetchSessionExport", () => {
     expect(text).toContain("### 1. causal · 63%");
     expect(text).toContain("- Belief: the access token expired");
     expect(text).toContain("1970-01-01T00:00:01.500Z");
+    expect(text).not.toContain("Because the access token expired.");
     expect(text).toBe(renderSessionMarkdown({
       metadata: metadata("run-1"),
       ...snapshot("run-1"),
@@ -268,6 +299,7 @@ describe("fetchSessionExport", () => {
   it("passes registry failures through and turns invalid state snapshots into 502s", async () => {
     const missing = makeEnv({ registryStatus: 404 });
     const missingResponse = await fetchSessionExport(
+      new Request("https://worker.example/api/sessions/run-1/export/json"),
       missing.env,
       "/api/sessions/run-1/export/json",
     );
@@ -276,6 +308,7 @@ describe("fetchSessionExport", () => {
 
     const malformed = makeEnv({ malformedSnapshot: true });
     const malformedResponse = await fetchSessionExport(
+      new Request("https://worker.example/api/sessions/run-1/export/json"),
       malformed.env,
       "/api/sessions/run-1/export/json",
     );
@@ -287,6 +320,14 @@ describe("fetchSessionExport", () => {
 });
 
 describe("fetchAllSessionsExport", () => {
+  beforeEach(() => {
+    setRateLimitCacheForTests(new MemoryRateLimitCache());
+  });
+
+  afterEach(() => {
+    setRateLimitCacheForTests(undefined);
+  });
+
   it("exports one registry page in registry order and preserves the opaque cursor", async () => {
     const cursor = "%5B123%2C%22run-a%22%5D";
     const newest = metadata("newest", 3_000);

@@ -3,17 +3,10 @@ import { SessionDurableObject } from "./SessionDurableObject";
 import { SESSION_REGISTRY_INSTANCE_NAME } from "./sessionRegistry";
 import type { ExtractedBelief } from "../lens/types";
 import type { Env, ExtractionResult } from "../proxy/types";
+import { createMemoryDurableObjectState } from "./memoryDurableObject";
 
 function makeState() {
-  const values = new Map<string, unknown>();
-  return {
-    storage: {
-      get: async <T>(key: string): Promise<T | undefined> => values.get(key) as T | undefined,
-      put: async (key: string, value: unknown): Promise<void> => {
-        values.set(key, value);
-      },
-    },
-  } as unknown as DurableObjectState;
+  return createMemoryDurableObjectState();
 }
 
 function belief(id: string): ExtractedBelief {

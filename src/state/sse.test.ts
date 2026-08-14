@@ -44,7 +44,7 @@ describe("SessionSseHub", () => {
       SSE_RESPONSE_HEADERS["Content-Type"],
     );
     expect(first.headers.get("Cache-Control")).toBe("no-cache, no-transform");
-    expect(first.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(first.headers.get("Access-Control-Allow-Origin")).toBeNull();
     expect(hub.size).toBe(2);
 
     expect(hub.publish([belief("one"), belief("two")])).toBe(4);

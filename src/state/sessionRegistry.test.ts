@@ -5,10 +5,13 @@ import {
   clampPageSize,
   decodeSessionCursor,
   encodeSessionCursor,
+  evictOldestSessions,
   normalizeSessionRecords,
+  packRegistryChunks,
   paginateSessions,
   parseSessionMetadataInput,
   sortSessionsByUpdatedAt,
+  unpackRegistryChunks,
   upsertSession,
   type SessionMetadata,
 } from "./sessionRegistry";
@@ -253,5 +256,40 @@ describe("untrusted registry values", () => {
         total_tokens: 2,
       },
     });
+  });
+});
+
+describe("registry chunks and eviction", () => {
+  it("starts a new chunk at the 101st session", () => {
+    const records = Array.from({ length: 101 }, (_, index) =>
+      session(`session-${String(index).padStart(3, "0")}`, index),
+    );
+    const packed = packRegistryChunks(records);
+    expect(packed.meta).toEqual({ chunkCount: 2, total: 101 });
+    expect(packed.chunks["sessions:0"]).toHaveLength(100);
+    expect(packed.chunks["sessions:1"]).toHaveLength(1);
+    expect(packed.chunks["sessions:1"]?.[0]?.id).toBe("session-100");
+    expect(unpackRegistryChunks(packed.meta, packed.chunks)).toHaveLength(101);
+  });
+
+  it("evicts the oldest updatedAt when over a stubbed cap of 3", () => {
+    const records = [
+      session("keep-new", 30),
+      session("keep-mid", 20),
+      session("drop-old", 10),
+      session("keep-newer", 40),
+    ];
+    const kept = evictOldestSessions(records, 3);
+    expect(kept.map((record) => record.id).sort()).toEqual([
+      "keep-mid",
+      "keep-new",
+      "keep-newer",
+    ]);
+  });
+
+  it("tie-breaks eviction by id when updatedAt matches", () => {
+    const records = [session("a", 10), session("c", 10), session("b", 10), session("d", 10)];
+    const kept = evictOldestSessions(records, 3);
+    expect(kept.map((record) => record.id).sort()).toEqual(["a", "b", "c"]);
   });
 });

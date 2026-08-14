@@ -4,11 +4,16 @@ import type { Env } from "./types";
 
 function makeEnv(fetchImpl: (input: RequestInfo | URL) => Promise<Response>): Env {
   return {
+    AXION_OPEN_READ: "true",
     SESSION: {
       idFromName: (name: string) => name as unknown as DurableObjectId,
       get: () => ({ fetch: fetchImpl }) as unknown as DurableObjectStub,
     },
   } as unknown as Env;
+}
+
+function usageRequest(): Request {
+  return new Request("https://worker.example/api/sessions/run-1/usage");
 }
 
 describe("extractSessionUsageId", () => {
@@ -27,6 +32,7 @@ describe("fetchSessionUsage", () => {
   it("forwards to the SessionDO /usage route and preserves its JSON body", async () => {
     let target = "";
     const response = await fetchSessionUsage(
+      usageRequest(),
       makeEnv(async (input) => {
         target = String(input);
         return new Response(
@@ -40,7 +46,7 @@ describe("fetchSessionUsage", () => {
       "/api/sessions/run-1/usage",
     );
     expect(target).toBe("https://internal/usage?sessionId=run-1");
-    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
     expect(await response.json()).toMatchObject({
       usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
     });
@@ -48,6 +54,7 @@ describe("fetchSessionUsage", () => {
 
   it("returns a 502 when the SessionDO is unavailable", async () => {
     const response = await fetchSessionUsage(
+      usageRequest(),
       makeEnv(async () => {
         throw new Error("offline");
       }),

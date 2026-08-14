@@ -2,37 +2,60 @@
  * Axion Lens - Cloudflare Worker entry point.
  *
  * Routes:
- *   POST /v1/chat/completions  → OpenAI-compatible observe / PolyVerdict enforce
- *   POST /v1/messages          → Anthropic Messages observe / PolyVerdict enforce
- *   GET  /dashboard*           → dashboard static assets
- *   GET  /api/beliefs/:id      → flat belief timeline for a session
+ *   POST /v1/chat/completions              OpenAI-compatible observe / PolyVerdict enforce
+ *   POST /v1/messages                      Anthropic Messages observe / PolyVerdict enforce
+ *   GET  /dashboard*                       dashboard static assets
+ *   GET  /api/health                       unauthenticated liveness
+ *   GET  /api/ready                        authenticated registry ping
+ *   GET  /api/beliefs/:id                  flat belief timeline for a session
+ *   GET  /api/search                       cross-session belief search
+ *   GET  /api/export/all                   bulk session export
+ *   GET  /api/sessions                     session registry page
+ *   GET  /api/sessions/:id                 one registry record
+ *   GET  /api/sessions/:id/export/json     single-session JSON export
+ *   GET  /api/sessions/:id/export/markdown single-session Markdown export
+ *   GET  /api/sessions/:id/usage           cumulative token usage
+ *   GET  /api/sse/:id                      live belief stream
+ *   OPTIONS /api/*                         CORS preflight
+ *   GET  /                                 302 to /dashboard
  *
  * Default path is observe-only (tee + waitUntil extraction, zero added latency).
  * When a schema trigger is present (x-axion-schema or response_format.json_schema),
  * the request enters PolyVerdict enforce mode (buffered, may retry).
+ * Read APIs require AXION_READ_TOKEN unless AXION_OPEN_READ=true.
  */
 
 import type { Env } from "./types";
 import { resolveUpstreamHeaders } from "./auth";
+import { handleApiOptions } from "./cors";
 import { extractAssistantText } from "./content";
-import { runExtraction } from "./extraction";
+import { extractObservedActions } from "./actions";
+import { runExtraction, type ExtractionCallMetadata } from "./extraction";
 import { teeResponseForExtraction } from "./stream";
 import { extractTokenUsage } from "./usage";
-import { handleDashboard } from "./routes";
+import { handleDashboard, handleLegacyDashboardAsset } from "./routes";
 import { fetchBeliefs } from "./beliefs";
 import { fetchAllSessionsExport, fetchSessionExport } from "./export";
+import { fetchHealth, fetchReady } from "./health";
 import { fetchSearch } from "./search";
 import { fetchSessionMetadata, fetchSessions } from "./sessions";
 import { fetchSessionUsage } from "./sessionUsage";
 import { fetchSessionSse } from "./sse";
 import { matchProvider } from "./providers";
 import type { ProviderAdapter, ProviderId } from "./providers/types";
+import { resolveUpstreamUrl } from "./upstreamUrl";
+import {
+  sumTokenUsage,
+  type CumulativeTokenUsage,
+  type TokenUsage,
+} from "../state/sessionUsage";
 import {
   detectSchemaTrigger,
-  enforceOnce,
-  buildRetryMessages,
   buildRetryMessagesAnthropic,
-  MAX_ENFORCE_ATTEMPTS,
+  runEnforceLoop,
+  type AnthropicMessage,
+  type EnforceLoopResult,
+  type OpenAiMessage,
   type SchemaTrigger,
 } from "../polyverdict";
 
@@ -47,6 +70,18 @@ export default {
   ): Promise<Response> {
     const url = new URL(request.url);
     const { pathname } = url;
+
+    if (request.method === "OPTIONS" && pathname.startsWith("/api/")) {
+      return handleApiOptions(request, env);
+    }
+
+    if (pathname === "/api/health" && request.method === "GET") {
+      return fetchHealth(request, env);
+    }
+
+    if (pathname === "/api/ready" && request.method === "GET") {
+      return fetchReady(request, env);
+    }
 
     if (pathname.startsWith("/api/beliefs/") && request.method === "GET") {
       return fetchBeliefs(request, env, pathname);
@@ -68,11 +103,11 @@ export default {
       /^\/api\/sessions\/[^/]+\/export\/(json|markdown)$/.test(pathname) &&
       request.method === "GET"
     ) {
-      return fetchSessionExport(env, pathname);
+      return fetchSessionExport(request, env, pathname);
     }
 
     if (/^\/api\/sessions\/[^/]+\/usage$/.test(pathname) && request.method === "GET") {
-      return fetchSessionUsage(env, pathname);
+      return fetchSessionUsage(request, env, pathname);
     }
 
     if (/^\/api\/sse\/[^/]+$/.test(pathname) && request.method === "GET") {
@@ -82,7 +117,7 @@ export default {
     // Keep nested V2 session routes (for example `/:id/usage` and exports)
     // available to their dedicated handlers instead of treating them as ids.
     if (/^\/api\/sessions\/[^/]+$/.test(pathname) && request.method === "GET") {
-      return fetchSessionMetadata(env, pathname);
+      return fetchSessionMetadata(request, env, pathname);
     }
 
     if (
@@ -91,6 +126,10 @@ export default {
       pathname.startsWith("/dashboard/")
     ) {
       return handleDashboard(request, env);
+    }
+
+    if (pathname === "/styles.css" || pathname === "/app.js") {
+      return handleLegacyDashboardAsset(request, env);
     }
 
     const provider = matchProvider(pathname, request.method);
@@ -111,6 +150,8 @@ export default {
 
 // --- Proxy ----------------------------------------------------------------
 
+const DEFAULT_MAX_BODY_BYTES = 1_048_576;
+
 async function proxyProviderRequest(
   request: Request,
   env: Env,
@@ -120,10 +161,31 @@ async function proxyProviderRequest(
   const sessionId =
     request.headers.get("x-axion-session") || crypto.randomUUID();
 
+  const auth = resolveUpstreamHeaders(request, env, provider.id);
+  if (!auth.ok) {
+    return auth.response;
+  }
+
+  const maxBytes = parseMaxBodyBytes(env.AXION_MAX_BODY_BYTES);
+  const contentLength = request.headers.get("content-length");
+  if (contentLength) {
+    const declared = Number(contentLength);
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      return jsonError(413, "Request body too large");
+    }
+  }
+
   let body: Record<string, unknown>;
   let rawBody: string;
   try {
     rawBody = await request.text();
+  } catch {
+    return jsonError(400, "Invalid JSON request body");
+  }
+  if (utf8ByteLength(rawBody) > maxBytes) {
+    return jsonError(413, "Request body too large");
+  }
+  try {
     body = JSON.parse(rawBody) as Record<string, unknown>;
   } catch {
     return jsonError(400, "Invalid JSON request body");
@@ -132,11 +194,6 @@ async function proxyProviderRequest(
   const validation = provider.validateRequest(body);
   if (!validation.ok) {
     return jsonError(400, validation.message);
-  }
-
-  const auth = resolveUpstreamHeaders(request, env, provider.id);
-  if (!auth.ok) {
-    return auth.response;
   }
 
   const trigger = detectSchemaTrigger(request.headers, body);
@@ -176,7 +233,7 @@ async function observeProviderRequest(opts: {
 }): Promise<Response> {
   const { env, ctx, provider, sessionId, body, rawBody, authHeaders } = opts;
   const isStreaming = body.stream === true;
-  const upstreamUrl = resolveUpstreamUrl(env, provider.upstreamPath);
+  const upstreamUrl = resolveUpstreamUrl(env, provider);
 
   let upstreamRes: Response;
   try {
@@ -216,18 +273,29 @@ async function observeProviderRequest(opts: {
         isSse,
         accumulated,
       });
-      await runExtraction(env, sessionId, text, {
-        usage: extractTokenUsage({ provider: provider.id, isSse, raw }),
-        modelName: typeof body.model === "string" ? body.model : undefined,
+      const actions = await extractObservedActions({
         provider: provider.id,
+        isSse,
+        raw,
+        storeArgs: env.AXION_STORE_TOOL_ARGS === "true",
       });
+      await runExtraction(
+        env,
+        sessionId,
+        text,
+        extractionMetadata(body, provider.id, {
+          usage: extractTokenUsage({ provider: provider.id, isSse, raw }),
+          actions,
+          waitUntil: (promise) => ctx.waitUntil(promise),
+        }),
+      );
     })()
   );
 
   return withSessionHeader(response, sessionId);
 }
 
-/** PolyVerdict enforce path: buffer, validate/coerce, retry ≤3. */
+/** PolyVerdict enforce path: buffer, validate/coerce, retry ≤3 via runEnforceLoop. */
 async function enforceProviderRequest(opts: {
   request: Request;
   env: Env;
@@ -239,21 +307,25 @@ async function enforceProviderRequest(opts: {
   trigger: SchemaTrigger;
 }): Promise<Response> {
   const { env, ctx, provider, sessionId, body, authHeaders, trigger } = opts;
-  const upstreamUrl = resolveUpstreamUrl(env, provider.upstreamPath);
+  const upstreamUrl = resolveUpstreamUrl(env, provider);
+  const initialMessages = Array.isArray(body.messages)
+    ? [...(body.messages as unknown[])]
+    : [];
 
-  // Enforce always forces non-streaming so we can validate the full payload.
-  let messages = Array.isArray(body.messages) ? [...(body.messages as unknown[])] : [];
-  let lastErrors: string[] = ["enforce did not run"];
-  let lastText = "";
+  // Accumulate per-attempt usage in this wrapper so runEnforceLoop stays a
+  // (messages, attempt) => Promise<string> callback. Summed retries are the
+  // cost of enforce, not a single completion.
+  const attemptUsages: Array<TokenUsage | undefined> = [];
+  let lastUsage: TokenUsage | undefined;
+  let lastRaw = "";
 
-  for (let attempt = 1; attempt <= MAX_ENFORCE_ATTEMPTS; attempt++) {
-    const attemptBody = {
+  const callUpstream = async (messages: OpenAiMessage[]): Promise<string> => {
+    const attemptBody: Record<string, unknown> = {
       ...body,
       stream: false,
       messages,
     };
-    // Strip client response_format so we own validation; keep model etc.
-    delete (attemptBody as { response_format?: unknown }).response_format;
+    delete attemptBody.response_format;
 
     let upstreamRes: Response;
     try {
@@ -263,86 +335,100 @@ async function enforceProviderRequest(opts: {
         body: JSON.stringify(attemptBody),
       });
     } catch (err) {
-      return jsonError(
-        502,
-        `Failed to reach upstream model API: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-      );
+      throw new EnforceConnectError(err);
     }
 
     if (!upstreamRes.ok) {
-      return withSessionHeader(upstreamRes, sessionId);
+      throw new EnforceUpstreamError(withSessionHeader(upstreamRes, sessionId));
     }
 
-    const raw = await upstreamRes.text();
-    lastText = provider.extractAssistantText(raw);
-    const usage = extractTokenUsage({
+    lastRaw = await upstreamRes.text();
+    lastUsage = extractTokenUsage({
       provider: provider.id,
       isSse: false,
-      raw,
+      raw: lastRaw,
     });
-    const result = enforceOnce(lastText, trigger.schema);
+    attemptUsages.push(lastUsage);
+    return provider.extractAssistantText(lastRaw);
+  };
 
-    if (result.ok && result.jsonText !== undefined) {
-      const delivered = result.jsonText;
-      ctx.waitUntil(
-        runExtraction(env, sessionId, delivered, {
-          usage,
-          modelName: typeof body.model === "string" ? body.model : undefined,
-          provider: provider.id,
-        }),
-      );
-      return withSessionHeader(
-        buildEnforcedResponse(provider.id, body, delivered),
-        sessionId
-      );
-    }
-
-    lastErrors = result.errors;
-    if (attempt < MAX_ENFORCE_ATTEMPTS) {
-      const ctxRetry = {
-        schema: trigger.schema,
-        errors: result.errors,
-        assistantText: lastText,
+  let loopResult: EnforceLoopResult;
+  try {
+    loopResult = await runEnforceLoop(
+      initialMessages as OpenAiMessage[],
+      trigger.schema,
+      callUpstream,
+      {
         name: trigger.name,
-      };
-      messages =
-        provider.id === "anthropic"
-          ? buildRetryMessagesAnthropic(messages as never, ctxRetry)
-          : buildRetryMessages(messages as never, ctxRetry);
+        buildRetry:
+          provider.id === "anthropic"
+            ? (messages, retryCtx) =>
+                buildRetryMessagesAnthropic(
+                  messages as unknown as AnthropicMessage[],
+                  retryCtx,
+                ) as unknown as OpenAiMessage[]
+            : undefined,
+      },
+    );
+  } catch (err) {
+    if (err instanceof EnforceUpstreamError) return err.response;
+    if (err instanceof EnforceConnectError) {
+      return jsonError(502, err.message);
     }
+    throw err;
   }
 
-  // Exhausted retries: return 422 with last errors; still extract last text.
+  const attemptsHeader = {
+    "x-axion-enforce-attempts": String(loopResult.attempts),
+  };
+
+  if (loopResult.ok && loopResult.jsonText !== undefined) {
+    const delivered = loopResult.jsonText;
+    const summed = sumTokenUsage(attemptUsages);
+    ctx.waitUntil(
+      extractThenRun(env, sessionId, delivered, body, provider.id, ctx, {
+        usage: summed,
+        raw: lastRaw,
+      }),
+    );
+    return withSessionHeader(
+      buildEnforcedResponse(provider.id, body, delivered, summed),
+      sessionId,
+      attemptsHeader,
+    );
+  }
+
+  // Exhausted retries: return 422 with last errors; extract last attempt usage.
   ctx.waitUntil(
-    runExtraction(env, sessionId, lastText, {
-      modelName: typeof body.model === "string" ? body.model : undefined,
-      provider: provider.id,
+    extractThenRun(env, sessionId, loopResult.finalText, body, provider.id, ctx, {
+      usage: lastUsage,
+      raw: lastRaw,
     }),
   );
-  return new Response(
-    JSON.stringify({
-      error: {
-        message: "PolyVerdict: output failed schema validation after retries",
-        errors: lastErrors,
-        attempts: MAX_ENFORCE_ATTEMPTS,
+  return withSessionHeader(
+    new Response(
+      JSON.stringify({
+        error: {
+          message: "PolyVerdict: output failed schema validation after retries",
+          errors: loopResult.errors,
+          attempts: loopResult.attempts,
+        },
+      }),
+      {
+        status: 422,
+        headers: { "Content-Type": "application/json" },
       },
-    }),
-    {
-      status: 422,
-      headers: {
-        "Content-Type": "application/json",
-        "x-axion-session": sessionId,
-      },
-    }
+    ),
+    sessionId,
+    attemptsHeader,
   );
 }
 
 function buildEnforcedResponse(
   provider: ProviderId,
   requestBody: Record<string, unknown>,
-  jsonText: string
+  jsonText: string,
+  usage: CumulativeTokenUsage,
 ): Response {
   const model =
     typeof requestBody.model === "string" ? requestBody.model : "unknown";
@@ -357,7 +443,10 @@ function buildEnforcedResponse(
       content: [{ type: "text", text: jsonText }],
       stop_reason: "end_turn",
       stop_sequence: null,
-      usage: { input_tokens: 0, output_tokens: 0 },
+      usage: {
+        input_tokens: usage.prompt_tokens,
+        output_tokens: usage.completion_tokens,
+      },
     };
     return new Response(JSON.stringify(payload), {
       status: 200,
@@ -377,7 +466,11 @@ function buildEnforcedResponse(
         finish_reason: "stop",
       },
     ],
-    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    usage: {
+      prompt_tokens: usage.prompt_tokens,
+      completion_tokens: usage.completion_tokens,
+      total_tokens: usage.total_tokens,
+    },
   };
   return new Response(JSON.stringify(payload), {
     status: 200,
@@ -387,22 +480,101 @@ function buildEnforcedResponse(
 
 // --- Helpers -------------------------------------------------------------
 
-function resolveUpstreamUrl(env: Env, path: string): string {
-  const base = (env.UPSTREAM_API_URL || "https://api.openai.com").replace(
-    /\/+$/,
-    ""
-  );
-  return `${base}${path}`;
+function parseMaxBodyBytes(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_MAX_BODY_BYTES;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_BODY_BYTES;
+  return Math.floor(parsed);
 }
 
-function withSessionHeader(response: Response, sessionId: string): Response {
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function withSessionHeader(
+  response: Response,
+  sessionId: string,
+  extra?: Record<string, string>,
+): Response {
   const headers = new Headers(response.headers);
   headers.set("x-axion-session", sessionId);
+  if (extra) {
+    for (const [key, value] of Object.entries(extra)) {
+      headers.set(key, value);
+    }
+  }
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers,
   });
+}
+
+function extractionMetadata(
+  body: Record<string, unknown>,
+  provider: ProviderId,
+  extra: ExtractionCallMetadata = {},
+): ExtractionCallMetadata {
+  const inboundMessageCount = Array.isArray(body.messages)
+    ? body.messages.length
+    : undefined;
+  return {
+    ...extra,
+    modelName: typeof body.model === "string" ? body.model : undefined,
+    provider,
+    messageCount: inboundMessageCount,
+    inboundMessageCount,
+  };
+}
+
+/** Enforce waitUntil: parse lastRaw for tools, then persist. Never awaited by the caller. */
+async function extractThenRun(
+  env: Env,
+  sessionId: string,
+  text: string,
+  body: Record<string, unknown>,
+  provider: ProviderId,
+  ctx: ExecutionContext,
+  extra: { usage?: TokenUsage; raw: string },
+): Promise<void> {
+  const raw = extra.raw;
+  const hasTools = raw.includes("tool_calls") || raw.includes("tool_use");
+  const actions = hasTools
+    ? await extractObservedActions({
+        provider,
+        isSse: false,
+        raw,
+        storeArgs: env.AXION_STORE_TOOL_ARGS === "true",
+      })
+    : [];
+  await runExtraction(
+    env,
+    sessionId,
+    text,
+    extractionMetadata(body, provider, {
+      usage: extra.usage,
+      actions,
+      waitUntil: (promise) => ctx.waitUntil(promise),
+    }),
+  );
+}
+
+class EnforceUpstreamError extends Error {
+  readonly response: Response;
+  constructor(response: Response) {
+    super("enforce upstream error");
+    this.response = response;
+  }
+}
+
+class EnforceConnectError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `Failed to reach upstream model API: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+    );
+  }
 }
 
 function jsonError(status: number, message: string): Response {

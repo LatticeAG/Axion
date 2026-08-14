@@ -13,6 +13,9 @@ import type { CumulativeTokenUsage } from "../state/sessionUsage";
 import type { SessionMetadata } from "../state/sessionRegistry";
 import { getSessionRegistryStub } from "./sessions";
 import type { Env } from "./types";
+import { applyCors, jsonErrorResponse } from "./cors";
+import { requireReadAuth } from "./readAuth";
+import { enforceReadRateLimit } from "./rateLimit";
 
 /** Registry pages, and bulk exports, are deliberately capped at this size. */
 export const EXPORT_PAGE_SIZE = 20;
@@ -75,57 +78,90 @@ export function parseSessionExportPath(
 }
 
 /** Handle GET /api/sessions/:id/export/json and /export/markdown. */
-export async function fetchSessionExport(env: Env, pathname: string): Promise<Response> {
+export async function fetchSessionExport(
+  request: Request,
+  env: Env,
+  pathname: string,
+): Promise<Response> {
+  const auth = requireReadAuth(request, env);
+  if (!auth.ok) return auth.response;
+
+  const limited = await enforceReadRateLimit(request, env, "read");
+  if (limited) return limited;
+
   const route = parseSessionExportPath(pathname);
-  if (!route) return jsonError(400, "Invalid session export path");
+  if (!route) return jsonErrorResponse(request, env, 400, "Invalid session export path");
 
   try {
     const [metadata, snapshot] = await Promise.all([
       fetchSessionMetadata(env, route.sessionId),
       fetchSessionStateSnapshot(env, route.sessionId),
     ]);
-    const exported = joinSessionExport(metadata, snapshot);
-    return formatSessionExport(exported, route.format, route.sessionId);
+    const includeRaw =
+      route.format === "json" && new URL(request.url).searchParams.get("includeRaw") === "1";
+    const exported = sanitizeSessionExport(joinSessionExport(metadata, snapshot), includeRaw);
+    return formatSessionExport(request, env, exported, route.format, route.sessionId);
   } catch (error) {
     if (error instanceof InternalResponseError) {
-      return forwardJsonResponse(error.response);
+      return forwardJsonResponse(request, env, error.response);
     }
     console.error(
       "axion: session export failed",
       error instanceof Error ? error.message : String(error),
     );
-    return jsonError(502, "Failed to export session");
+    return jsonErrorResponse(request, env, 502, "Failed to export session");
   }
 }
 
 /** Handle GET /api/export/all using the registry's existing opaque cursor. */
 export async function fetchAllSessionsExport(request: Request, env: Env): Promise<Response> {
+  const auth = requireReadAuth(request, env);
+  if (!auth.ok) return auth.response;
+
+  const limited = await enforceReadRateLimit(request, env, "exportAll");
+  if (limited) return limited;
+
   const url = new URL(request.url);
 
   try {
     const page = await fetchExportRegistryPage(env, url.searchParams.get("cursor"));
-    // Promise.all preserves registry ordering, so the export is deterministic
-    // even though per-session Durable Object reads run concurrently.
     const sessions = await Promise.all(
       page.sessions.map(async (metadata) =>
-        joinSessionExport(
-          metadata,
-          await fetchSessionStateSnapshot(env, metadata.id),
+        sanitizeSessionExport(
+          joinSessionExport(
+            metadata,
+            await fetchSessionStateSnapshot(env, metadata.id),
+          ),
+          false,
         ),
       ),
     );
     const payload: BulkSessionExport = { sessions, nextCursor: page.nextCursor };
-    return downloadJson(payload, "axion-sessions.json");
+    return downloadJson(request, env, payload, "axion-sessions.json");
   } catch (error) {
     if (error instanceof InternalResponseError) {
-      return forwardJsonResponse(error.response);
+      return forwardJsonResponse(request, env, error.response);
     }
     console.error(
       "axion: bulk session export failed",
       error instanceof Error ? error.message : String(error),
     );
-    return jsonError(502, "Failed to export sessions");
+    return jsonErrorResponse(request, env, 502, "Failed to export sessions");
   }
+}
+
+/** Strip model-output rawText from the public export shape. */
+export function sanitizeSessionExport(
+  exported: SessionExport,
+  includeRaw: boolean,
+): SessionExport {
+  return {
+    ...exported,
+    beliefs: exported.beliefs.map((belief) => ({ ...belief, rawText: "" })),
+    batches: includeRaw
+      ? exported.batches
+      : exported.batches.map((batch) => ({ ...batch, rawText: "" })),
+  };
 }
 
 /** Join validated registry metadata and a validated session-state snapshot. */
@@ -161,6 +197,7 @@ export function renderSessionMarkdown(exported: SessionExport): string {
     `- Updated: ${formatTimestamp(metadata.updatedAt)}`,
     `- Captured calls: ${exported.calls}`,
     `- Registry message count: ${metadata.messageCount}`,
+    `- Inbound messages: ${lastInboundMessageCount(exported)}`,
     "",
     "## Token usage",
     "",
@@ -282,60 +319,76 @@ async function fetchExportRegistryPage(env: Env, cursor: string | null): Promise
 }
 
 function formatSessionExport(
+  request: Request,
+  env: Env,
   exported: SessionExport,
   format: SessionExportFormat,
   requestedSessionId: string,
 ): Response {
   const filename = sessionExportFilename(requestedSessionId, format);
   if (format === "markdown") {
-    return downloadText(renderSessionMarkdown(exported), "text/markdown; charset=utf-8", filename);
+    return downloadText(
+      request,
+      env,
+      renderSessionMarkdown(exported),
+      "text/markdown; charset=utf-8",
+      filename,
+    );
   }
-  return downloadJson(exported, filename);
+  return downloadJson(request, env, exported, filename);
 }
 
-function downloadJson(payload: unknown, filename: string): Response {
-  return downloadText(JSON.stringify(payload), "application/json; charset=utf-8", filename);
+function downloadJson(
+  request: Request,
+  env: Env,
+  payload: unknown,
+  filename: string,
+): Response {
+  return downloadText(
+    request,
+    env,
+    JSON.stringify(payload),
+    "application/json; charset=utf-8",
+    filename,
+  );
 }
 
-function downloadText(body: string, contentType: string, filename: string): Response {
+function downloadText(
+  request: Request,
+  env: Env,
+  body: string,
+  contentType: string,
+  filename: string,
+): Response {
   return new Response(body, {
-    headers: exportHeaders(contentType, filename),
+    headers: exportHeaders(request, env, contentType, filename),
   });
 }
 
-function exportHeaders(contentType: string, filename: string): Headers {
-  return new Headers({
+function exportHeaders(
+  request: Request,
+  env: Env,
+  contentType: string,
+  filename: string,
+): Headers {
+  const headers = new Headers({
     "Content-Type": contentType,
     "Content-Disposition": `attachment; filename="${filename}"`,
-    "Access-Control-Allow-Origin": "*",
     "Cache-Control": "no-store",
   });
+  applyCors(request, env, headers);
+  return headers;
 }
 
-function forwardJsonResponse(response: Response): Response {
+function forwardJsonResponse(request: Request, env: Env, response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("Content-Type", "application/json; charset=utf-8");
-  headers.set("Access-Control-Allow-Origin", "*");
   headers.set("Cache-Control", "no-store");
+  applyCors(request, env, headers);
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers,
-  });
-}
-
-function apiHeaders(contentType: string): Headers {
-  return new Headers({
-    "Content-Type": contentType,
-    "Access-Control-Allow-Origin": "*",
-    "Cache-Control": "no-store",
-  });
-}
-
-function jsonError(status: number, message: string): Response {
-  return new Response(JSON.stringify({ error: { message } }), {
-    status,
-    headers: apiHeaders("application/json; charset=utf-8"),
   });
 }
 
@@ -405,6 +458,17 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isFiniteNonNegative(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function lastInboundMessageCount(exported: SessionExport): string {
+  for (let index = exported.batches.length - 1; index >= 0; index--) {
+    const count = exported.batches[index]?.inboundMessageCount
+      ?? exported.batches[index]?.messageCount;
+    if (typeof count === "number" && Number.isFinite(count) && count >= 0) {
+      return String(Math.trunc(count));
+    }
+  }
+  return "n/a";
 }
 
 function formatTimestamp(value: number): string {

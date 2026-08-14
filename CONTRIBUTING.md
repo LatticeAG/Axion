@@ -14,6 +14,7 @@ npm run check   # typecheck + tests; run this before opening a PR
 ```
 
 Copy `.dev.vars.example` to `.dev.vars` and fill in the values you need for local runs.
+`.dev.vars.example` is tracked on purpose. Do not commit `.dev.vars`, `.dev.vars.local`, or `.dev.vars.production`.
 
 ## Pull requests
 

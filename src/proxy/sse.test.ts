@@ -32,6 +32,7 @@ function makeEnv(
     },
   } as unknown as DurableObjectStub;
   const env = {
+    AXION_OPEN_READ: "true",
     SESSION: {
       idFromName: (name: string) => {
         ids.push(name);
@@ -74,7 +75,7 @@ describe("fetchSessionSse", () => {
     );
     expect(response.headers.get("Content-Type")).toBe("text/event-stream; charset=utf-8");
     expect(response.headers.get("Cache-Control")).toBe("no-cache, no-transform");
-    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
 
     hub.publish([belief("live-1")]);
     const chunk = await reader.read();
@@ -135,7 +136,7 @@ describe("fetchSessionSse", () => {
 
     expect(response.status).toBe(404);
     expect(response.headers.get("Content-Type")).toBe("application/json");
-    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
     expect(response.headers.get("Cache-Control")).toBe("no-cache, no-transform");
   });
 });

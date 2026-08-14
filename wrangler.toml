@@ -24,15 +24,27 @@ tag = "v2"
 new_classes = ["SessionRegistryDurableObject"]
 
 # Static assets for the dashboard (served by the Worker via the ASSETS binding).
+# Worker-first so /dashboard routing and the read APIs own the origin.
 [assets]
 directory = "./src/dashboard"
 binding = "ASSETS"
+run_worker_first = true
 
 # Vars / secrets:
-#   UPSTREAM_API_URL  - base URL of the model API (default OpenAI)
-#   UPSTREAM_API_KEY  - optional; only used when the caller does not send
-#                       Authorization / x-api-key. Prefer caller passthrough.
-#                       Set with: wrangler secret put UPSTREAM_API_KEY
+#   UPSTREAM_OPENAI_URL     - OpenAI adapter base (default https://api.openai.com)
+#   UPSTREAM_ANTHROPIC_URL  - Anthropic adapter base (default https://api.anthropic.com)
+#   UPSTREAM_API_URL        - legacy OpenAI-only override when UPSTREAM_OPENAI_URL is unset
+#   UPSTREAM_API_KEY        - optional; only used when the caller does not send
+#                             Authorization / x-api-key. Prefer caller passthrough.
+#                             Set with: wrangler secret put UPSTREAM_API_KEY
+#   AXION_READ_TOKEN        - required for every public read API in production
+#                             wrangler secret put AXION_READ_TOKEN
+#   AXION_OPEN_READ         - local escape; must be the string "true". Do not set in production.
+#   AXION_CORS_ORIGIN       - exact Origin to reflect; unset means no CORS headers
+#   AXION_CURSOR_SECRET     - HMAC for /api/search cursors (wrangler secret put)
+#   AXION_BELIEF_WEBHOOK_URL - POST axion.belief_batch.v1 after a successful store
+#   AXION_WEBHOOK_SECRET    - HMAC for belief-batch webhooks (wrangler secret put)
+#   AXION_WEBHOOK_ALLOW_UNSIGNED - local only; allow unsigned webhook POSTs
 #                       Local: copy .dev.vars.example → .dev.vars
 [vars]
 UPSTREAM_API_URL = "https://api.openai.com"

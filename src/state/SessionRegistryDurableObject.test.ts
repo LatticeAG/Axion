@@ -4,17 +4,11 @@ import {
   SessionRegistryDurableObject,
 } from "./SessionRegistryDurableObject";
 import type { SessionMetadata } from "./sessionRegistry";
+import { createMemoryDurableObjectState } from "./memoryDurableObject";
+import { REGISTRY_META_KEY } from "./sessionRegistry";
 
 function makeState(initial: Record<string, unknown> = {}) {
-  const store = new Map<string, unknown>(Object.entries(initial));
-  return {
-    storage: {
-      get: async <T>(key: string): Promise<T | undefined> => store.get(key) as T | undefined,
-      put: async (key: string, value: unknown): Promise<void> => {
-        store.set(key, value);
-      },
-    },
-  } as unknown as DurableObjectState;
+  return createMemoryDurableObjectState("registry-do", initial);
 }
 
 function registration(
@@ -154,6 +148,24 @@ describe("SessionRegistryDurableObject", () => {
     expect(body.id).toBe("run/with spaces");
   });
 
+  it("returns an individual record from GET /session?id=", async () => {
+    const registry = new SessionRegistryDurableObject(makeState());
+    await registry.fetch(registration("run/with spaces", 10));
+
+    const response = await registry.fetch(
+      new Request("https://internal/session?id=run%2Fwith%20spaces"),
+    );
+    const body = (await response.json()) as SessionMetadata;
+
+    expect(response.status).toBe(200);
+    expect(body.id).toBe("run/with spaces");
+
+    const missing = await registry.fetch(new Request("https://internal/session?id=nope"));
+    expect(missing.status).toBe(404);
+    const missingQuery = await registry.fetch(new Request("https://internal/session"));
+    expect(missingQuery.status).toBe(400);
+  });
+
   it("returns JSON errors for bad payloads, missing records, and unknown routes", async () => {
     const registry = new SessionRegistryDurableObject(makeState());
     const badPayload = await registry.fetch(
@@ -192,5 +204,111 @@ describe("extractPathSessionId", () => {
     expect(extractPathSessionId("/session/a/b")).toBeNull();
     expect(extractPathSessionId("/session/")).toBeNull();
     expect(extractPathSessionId("/other/a")).toBeNull();
+  });
+});
+
+describe("SessionRegistryDurableObject chunks", () => {
+  it("lists all 101 sessions after the second chunk starts", async () => {
+    const registry = new SessionRegistryDurableObject(makeState());
+    for (let index = 0; index < 101; index++) {
+      await registry.fetch(registration(`session-${index}`, index));
+    }
+
+    const firstResponse = await registry.fetch(
+      new Request("https://internal/sessions?limit=100"),
+    );
+    const first = (await firstResponse.json()) as {
+      sessions: SessionMetadata[];
+      nextCursor: string | null;
+    };
+    expect(first.sessions).toHaveLength(100);
+    expect(first.nextCursor).not.toBeNull();
+
+    const secondResponse = await registry.fetch(
+      new Request(
+        `https://internal/sessions?limit=100&cursor=${encodeURIComponent(first.nextCursor!)}`,
+      ),
+    );
+    const second = (await secondResponse.json()) as {
+      sessions: SessionMetadata[];
+      nextCursor: string | null;
+    };
+    expect(second.sessions).toHaveLength(1);
+    expect(second.sessions[0]?.id).toBe("session-0");
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it("migrates a legacy sessions array on the next register", async () => {
+    const registry = new SessionRegistryDurableObject(
+      makeState({
+        sessions: [
+          {
+            id: "legacy-a",
+            createdAt: 1,
+            updatedAt: 10,
+            modelName: "gpt-test",
+            provider: "openai",
+            sessionName: "legacy-a",
+            messageCount: 1,
+            tokenUsage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
+        ],
+      }),
+    );
+
+    const created = await registry.fetch(registration("legacy-b", 20));
+    expect(created.status).toBe(201);
+
+    const listed = await registry.fetch(new Request("https://internal/sessions"));
+    const body = (await listed.json()) as { sessions: SessionMetadata[] };
+    expect(body.sessions.map((item) => item.id)).toEqual(["legacy-b", "legacy-a"]);
+  });
+
+  it("keeps serving the legacy key and refuses new registers when migration fails", async () => {
+    const state = makeState({
+      sessions: [
+        {
+          id: "existing",
+          createdAt: 1,
+          updatedAt: 2,
+          modelName: "gpt-test",
+          provider: "openai",
+          sessionName: "existing",
+          messageCount: 1,
+          tokenUsage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        },
+      ],
+    });
+    const originalPut = state.storage.put.bind(state.storage);
+    state.storage.put = (async (
+      keyOrEntries: string | Record<string, unknown>,
+      value?: unknown,
+    ) => {
+      if (typeof keyOrEntries === "string" && keyOrEntries === REGISTRY_META_KEY) {
+        throw new Error("chunk write failed");
+      }
+      if (typeof keyOrEntries === "object" && keyOrEntries && REGISTRY_META_KEY in keyOrEntries) {
+        throw new Error("chunk write failed");
+      }
+      if (typeof keyOrEntries === "string") {
+        return originalPut(keyOrEntries, value);
+      }
+      return originalPut(keyOrEntries);
+    }) as DurableObjectStorage["put"];
+
+    const registry = new SessionRegistryDurableObject(state);
+    const refused = await registry.fetch(registration("brand-new", 50));
+    expect(refused.status).toBe(503);
+    expect((await refused.json()) as unknown).toEqual({
+      error: { message: "Session registry cannot accept new registrations" },
+    });
+
+    const listed = await registry.fetch(new Request("https://internal/sessions"));
+    const body = (await listed.json()) as { sessions: SessionMetadata[] };
+    expect(body.sessions).toHaveLength(1);
+    expect(body.sessions[0]?.id).toBe("existing");
+
+    const updated = await registry.fetch(registration("existing", 80, { messageCount: 4 }));
+    expect(updated.status).toBe(200);
   });
 });

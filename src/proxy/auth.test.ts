@@ -115,6 +115,36 @@ describe("resolveUpstreamHeaders", () => {
     expect(body.error.message).toContain("UPSTREAM_API_KEY");
   });
 
+  it("maps Anthropic Authorization Bearer onto x-api-key when x-api-key is absent", () => {
+    const result = resolveUpstreamHeaders(
+      req({ Authorization: "Bearer sk-ant-caller" }),
+      makeEnv(),
+      "anthropic"
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.headers.get("Authorization")).toBe("Bearer sk-ant-caller");
+    expect(result.headers.get("x-api-key")).toBe("sk-ant-caller");
+    expect(result.headers.get("anthropic-version")).toBe(
+      DEFAULT_ANTHROPIC_VERSION
+    );
+  });
+
+  it("does not overwrite a caller x-api-key when both Anthropic headers are present", () => {
+    const result = resolveUpstreamHeaders(
+      req({
+        Authorization: "Bearer sk-ant-caller",
+        "x-api-key": "ak-direct",
+      }),
+      makeEnv(),
+      "anthropic"
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.headers.get("Authorization")).toBe("Bearer sk-ant-caller");
+    expect(result.headers.get("x-api-key")).toBe("ak-direct");
+  });
+
   it("never emits `Bearer undefined` when the server key is empty/whitespace", () => {
     const empty = resolveUpstreamHeaders(
       req(),

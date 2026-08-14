@@ -65,10 +65,12 @@ function cursorState(overrides: Partial<SearchCursorState> = {}): SearchCursorSt
     version: 1,
     fingerprint: searchFingerprint(activeFilters),
     registryExhausted: false,
-    pending: [{ session: session("session-a"), beliefOffset: 2 }],
+    pending: [{ id: "session-a", beliefOffset: 2 }],
     ...overrides,
   };
 }
+
+const CURSOR_SECRET = "test-cursor-secret";
 
 describe("parseSearchFilters", () => {
   it("parses a required query with the V2 default limit", () => {
@@ -214,35 +216,66 @@ describe("search ordering", () => {
 });
 
 describe("opaque search cursors", () => {
-  it("round-trips a current registry page and per-session offset", () => {
+  it("round-trips a current registry page and per-session offset", async () => {
     const state = cursorState({ registryCursor: "registry cursor / %", registryExhausted: false });
-    const decoded = decodeSearchCursor(encodeSearchCursor(state), filters());
+    const decoded = await decodeSearchCursor(
+      await encodeSearchCursor(state, CURSOR_SECRET),
+      filters(),
+      CURSOR_SECRET,
+    );
 
     expect(decoded).toEqual({ ok: true, state });
   });
 
-  it("permits a new page size but rejects a different query or filter", () => {
-    const encoded = encodeSearchCursor(cursorState());
-    expect(decodeSearchCursor(encoded, filters({ limit: 3 })).ok).toBe(true);
-    expect(decodeSearchCursor(encoded, filters({ q: "different" }))).toEqual({
+  it("does not embed tokenUsage in the encoded cursor string", async () => {
+    const encoded = await encodeSearchCursor(
+      cursorState({ pending: [{ id: session("session-a").id, beliefOffset: 0 }] }),
+      CURSOR_SECRET,
+    );
+    expect(encoded).not.toContain("tokenUsage");
+    const decoded = await decodeSearchCursor(encoded, filters(), CURSOR_SECRET);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(JSON.stringify(decoded.state)).not.toContain("tokenUsage");
+    }
+  });
+
+  it("permits a new page size but rejects a different query or filter", async () => {
+    const encoded = await encodeSearchCursor(cursorState(), CURSOR_SECRET);
+    expect((await decodeSearchCursor(encoded, filters({ limit: 3 }), CURSOR_SECRET)).ok).toBe(true);
+    expect(await decodeSearchCursor(encoded, filters({ q: "different" }), CURSOR_SECRET)).toEqual({
       ok: false,
       message: "Search cursor does not match this query",
     });
-    expect(decodeSearchCursor(encoded, filters({ type: "causal" }))).toEqual({
+    expect(await decodeSearchCursor(encoded, filters({ type: "causal" }), CURSOR_SECRET)).toEqual({
       ok: false,
       message: "Search cursor does not match this query",
     });
   });
 
-  it("rejects malformed, oversized, and structurally invalid cursors", () => {
-    expect(decodeSearchCursor("not-base64!", filters()).ok).toBe(false);
-    expect(decodeSearchCursor("a".repeat(16_385), filters()).ok).toBe(false);
+  it("rejects malformed, unsigned, oversized, and structurally invalid cursors", async () => {
+    expect((await decodeSearchCursor("not-base64!", filters(), CURSOR_SECRET)).ok).toBe(false);
+    expect((await decodeSearchCursor("a".repeat(16_385), filters(), CURSOR_SECRET)).ok).toBe(false);
 
-    const invalid = encodeSearchCursor({
-      ...cursorState(),
-      pending: [{ session: session("a"), beliefOffset: -1 }],
-    });
-    expect(decodeSearchCursor(invalid, filters()).ok).toBe(false);
+    const unsignedPayload = btoa('{"v":1}').replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    expect((await decodeSearchCursor(unsignedPayload, filters(), CURSOR_SECRET)).ok).toBe(false);
+
+    const invalid = await encodeSearchCursor(
+      {
+        ...cursorState(),
+        pending: [{ id: "a", beliefOffset: -1 }],
+      },
+      CURSOR_SECRET,
+    );
+    expect((await decodeSearchCursor(invalid, filters(), CURSOR_SECRET)).ok).toBe(false);
+  });
+
+  it("rejects a mismatched MAC", async () => {
+    const encoded = await encodeSearchCursor(cursorState(), CURSOR_SECRET);
+    const [payload, mac] = encoded.split(".");
+    const tampered = `${payload!.slice(0, -1)}${payload!.endsWith("A") ? "B" : "A"}.${mac}`;
+    expect((await decodeSearchCursor(tampered, filters(), CURSOR_SECRET)).ok).toBe(false);
+    expect((await decodeSearchCursor(encoded, filters(), "other-secret")).ok).toBe(false);
   });
 });
 

@@ -50,6 +50,23 @@ export const SESSION_PAGE_SIZE = 20;
 /** Maximum internal page size, used by server-side consumers such as search. */
 export const MAX_SESSION_PAGE_SIZE = 100;
 
+/** Metadata records stored in each `sessions:<chunk>` value. */
+export const REGISTRY_CHUNK_SIZE = 100;
+
+/** Rolling inspect-window cap for indexed sessions. */
+export const MAX_REGISTRY_SESSIONS = 5000;
+
+/** Legacy single-key array used before chunked persistence. */
+export const LEGACY_SESSIONS_KEY = "sessions";
+
+/** Chunk count and total for the sharded registry layout. */
+export const REGISTRY_META_KEY = "registryMeta";
+
+export interface RegistryMeta {
+  chunkCount: number;
+  total: number;
+}
+
 /** Stable name for the singleton global SessionRegistry Durable Object. */
 export const SESSION_REGISTRY_INSTANCE_NAME = "axion-session-registry";
 
@@ -288,4 +305,71 @@ function asTokenUsage(value: unknown): Partial<TokenUsage> | undefined {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Zero-based chunk key: `sessions:0`, `sessions:1`, ... */
+export function registryChunkKey(index: number): string {
+  return `sessions:${index}`;
+}
+
+export function isRegistryMeta(value: unknown): value is RegistryMeta {
+  if (!isObject(value)) return false;
+  return (
+    typeof value.chunkCount === "number" &&
+    Number.isFinite(value.chunkCount) &&
+    value.chunkCount >= 0 &&
+    typeof value.total === "number" &&
+    Number.isFinite(value.total) &&
+    value.total >= 0
+  );
+}
+
+/** Split a flat registry list into 100-record chunks. */
+export function packRegistryChunks(
+  records: readonly SessionMetadata[],
+): { meta: RegistryMeta; chunks: Record<string, SessionMetadata[]> } {
+  const chunks: Record<string, SessionMetadata[]> = {};
+  if (records.length === 0) {
+    return { meta: { chunkCount: 0, total: 0 }, chunks };
+  }
+  const chunkCount = Math.ceil(records.length / REGISTRY_CHUNK_SIZE);
+  for (let index = 0; index < chunkCount; index++) {
+    const start = index * REGISTRY_CHUNK_SIZE;
+    chunks[registryChunkKey(index)] = records.slice(start, start + REGISTRY_CHUNK_SIZE);
+  }
+  return {
+    meta: { chunkCount, total: records.length },
+    chunks,
+  };
+}
+
+/** Concatenate stored chunks in index order. */
+export function unpackRegistryChunks(
+  meta: RegistryMeta,
+  listed: Map<string, unknown> | Record<string, unknown>,
+): SessionMetadata[] {
+  const lookup = listed instanceof Map ? listed : new Map(Object.entries(listed));
+  const records: SessionMetadata[] = [];
+  for (let index = 0; index < meta.chunkCount; index++) {
+    records.push(...normalizeSessionRecords(lookup.get(registryChunkKey(index))));
+  }
+  return records;
+}
+
+/**
+ * Drop oldest updatedAt rows when over cap. Same timestamp uses id ASC so the
+ * larger id is evicted first, matching newest-first listing.
+ */
+export function evictOldestSessions(
+  records: readonly SessionMetadata[],
+  maxSessions: number = MAX_REGISTRY_SESSIONS,
+): SessionMetadata[] {
+  const cap = Math.max(0, Math.floor(maxSessions));
+  if (records.length <= cap) return [...records];
+  const keepIds = new Set(
+    sortSessionsByUpdatedAt(records)
+      .slice(0, cap)
+      .map((record) => record.id),
+  );
+  return records.filter((record) => keepIds.has(record.id));
 }

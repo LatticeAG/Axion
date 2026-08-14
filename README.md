@@ -17,76 +17,90 @@ Agent cognitive middleware. A proxy that reads what an agent believes from its o
 
 ## What this is
 
-Axion is a Cloudflare Worker that sits in front of a model API. Point an agent at it by overriding the base URL. The Worker forwards each request upstream and streams the response straight back with zero added latency. After the response is delivered, it runs a rule-based parser over the assistant text to pull out reasoning fragments (causal claims, assumptions, intentions, cited evidence), stamps them with a confidence score, and stores them per session. A local dashboard reads them back as a timeline.
+Axion is a Cloudflare Worker that sits in front of a model API. Point an agent at it by overriding the base URL. The Worker forwards each request upstream and streams the response straight back with zero added latency. After the response is delivered, a regex lens pulls reasoning fragments from visible assistant text, stamps them with a linguistic confidence score, and stores them per session.
 
-Named after the axion particle: theorized to exist, never directly observed, detected only through its effects. Agent beliefs are the same. They are invisible but they shape every decision, and this makes them visible.
+What ships today is a regex lens behind a transparent proxy. It is not a LangSmith replacement, not a prompt playground, not an eval harness, and not a hosted SaaS. Inspection, not another trace backend.
 
 ```
 Agent  <->  Axion (CF Worker)  <->  Model API
 ```
 
-> **Honest scope.** This repo is the Phase 1 observe path plus an opt-in schema enforce mode. It does not detect loops, block tool calls, or build a belief graph. See [What is not built](#what-is-not-built) before you form expectations. The full product plan lives in [BUILD-SPEC.md](./BUILD-SPEC.md), which is the source of truth for scope.
-
 ---
 
 ## What is shipped
 
-- **OpenAI-compatible proxy.** `POST /v1/chat/completions`, streaming and non-streaming.
-- **Anthropic Messages proxy.** `POST /v1/messages`, streaming and non-streaming.
-- **Passthrough auth.** Forward the caller's `Authorization` or `x-api-key`. Fall back to the `UPSTREAM_API_KEY` secret only when it is set. Otherwise return 401. No `Bearer undefined` is ever sent upstream.
-- **Zero-latency observe path.** The response body is tee'd with `ReadableStream.tee()`. One branch streams to the caller untouched; the other accumulates text for extraction in `waitUntil()` after delivery.
-- **Belief extraction.** Regex patterns pull causal/assumption/intention/evidence fragments. Confidence starts at a per-pattern baseline and is nudged by additive markers, clamped to `[0.1, 1.0]`. Every belief is stamped with the session id.
-- **Durable session store.** A Durable Object appends each response's beliefs as a batch to Durable Object storage. `GET /api/beliefs/:sessionId` returns a flat chronological `ExtractedBelief[]`.
-- **Local dashboard.** Paste or link a session id, see its timeline. Filter by type, minimum confidence, or low-confidence only.
-- **PolyVerdict enforce mode (opt-in).** Send a JSON Schema and the Worker validates, coerces types, and retries the model up to 3 times before returning. Off by default.
-- **Tests and CI.** Vitest suite, `npm test` / `npm run check`, GitHub Actions on push and PR.
+- **OpenAI Chat Completions proxy.** `POST /v1/chat/completions`, streaming and non-streaming. Default base `https://api.openai.com`.
+- **Anthropic Messages proxy.** `POST /v1/messages`, streaming and non-streaming. Default base `https://api.anthropic.com`. Legacy `UPSTREAM_API_URL` overrides OpenAI only.
+- **Passthrough auth.** Forward the caller's `Authorization` or `x-api-key`. Fall back to the `UPSTREAM_API_KEY` secret only when it is set. Anthropic Bearer tokens are also copied to `x-api-key`. Never `Bearer undefined`.
+- **Zero-latency observe path.** `ReadableStream.tee()`: one branch to the caller untouched, extraction in `waitUntil()` after delivery.
+- **Eight belief types.** causal, assumption, intention, evidence, uncertainty, contradiction, planning, self-correction. Baselines live in `BELIEF_TYPE_CONFIDENCE_BASELINES`. Markers nudge, then clamp to `[0.1, 1.0]` at extraction. Read-time decay is `0.9 ^ turnsAgo` (newest batch is 0). Decay may go below 0.1. Stored batches keep original confidence.
+- **Sharded session store.** Up to 200 batches per session (`AXION_MAX_BELIEF_BATCHES`, clamped `[20, 1000]`). Legacy single-key `"beliefs"` arrays migrate on write. Registry holds at most 5000 sessions.
+- **Read APIs behind a token.** `AXION_READ_TOKEN` via `Authorization: Bearer <token>` or `x-axion-read-token`. SSE also accepts `?readToken=` because EventSource cannot set headers. Local escape: `AXION_OPEN_READ=true`. Missing token fails closed.
+- **Session registry.** `GET /api/sessions` returns 20 records per page. Search, export, usage, and live SSE exist and require the same token.
+- **Public payloads omit raw model text.** `GET /api/beliefs/:id` sends `rawText: ""`. JSON export includes `batches[].rawText` only with `?includeRaw=1`. Markdown never includes raw source.
+- **Local dashboard.** Paste or link a session id. Send the read token from a local field. Full session picker, SSE live-append, usage panel, and export buttons are not in this UI yet.
+- **PolyVerdict enforce mode (opt-in).** JSON Schema validate/coerce, retry up to 3 times. Off by default. Usage on success is summed across attempts.
+- **Native tool-call capture.** OpenAI `tool_calls` and Anthropic `tool_use` become `ObservedAction` records on the same batch. Beliefs GET returns `{ sessionId, beliefs, actions }`.
+- **Signed belief-batch webhook.** After a successful store, Axion POSTs `axion.belief_batch.v1` to `AXION_BELIEF_WEBHOOK_URL` in `waitUntil`. HMAC header when `AXION_WEBHOOK_SECRET` is set.
+- **Health.** `GET /api/health` is unauthenticated liveness. `GET /api/ready` requires the read token and pings the registry.
+- **Read rate limits.** Cache API windows: 30 search, 6 export-all, 120 other authenticated reads per token per minute.
+- **Tests and CI.** `npm run check` is `tsc --noEmit && vitest run`. Node 20+.
 
 ## What is not built
 
-These appear in older drafts and in the roadmap. None of them are in the code:
-
-- Belief DAG, parent/child edges, root-cause backtracking. The store is a flat timeline. `BeliefNode`/`BeliefDAG` types exist but are marked `@planned` and have no runtime.
-- `/api/sessions` session registry. The dashboard takes a pasted session id instead.
+- Belief DAG, parent/child edges, root-cause backtracking. The store is a flat timeline. `BeliefNode` / `BeliefDAG` types are marked planned and have no runtime.
 - Axion Loop (loop detection) and Axion Gate (tool-call blocking).
 - Semantic PolyVerdict, second-model verification, hallucination checks.
-- Schema registry Durable Object, schema hash cache.
-- Hosted multi-session SaaS dashboard.
+- Hidden chain-of-thought recovery. The lens reads visible assistant text only.
+- A quality score. Confidence is linguistic extraction confidence, possibly decayed.
+- PII classification. Secret regex redaction is a bounded detector, not completeness.
+- Hosted multi-session SaaS, billing, or an npm `axion/lens` package. This repo is a private Worker. Deploy your own instance.
 
 ---
 
-## The three layers
+## Routes
 
-| Layer | Name | Status | What it does |
-| :---: | --- | :---: | --- |
-| 1 | **Axion Lens** | Shipping (observe) | Extracts reasoning fragments from each response into a per-session timeline. Read-only. |
-| 2 | **Axion Loop** | Planned | Detect when an agent is cycling the same reasoning and intervene with feedback. Not implemented. |
-| 3 | **Axion Gate** | Planned | Verify tool calls before execution and block bad ones. Not implemented. |
+| Method + path | Auth | Notes |
+| --- | --- | --- |
+| `POST /v1/chat/completions` | upstream passthrough | OpenAI observe or enforce |
+| `POST /v1/messages` | upstream passthrough | Anthropic observe or enforce |
+| `GET /api/health` | none | `{ ok, name, version }` |
+| `GET /api/ready` | read token | `{ ok, registry: "up"\|"down" }` |
+| `GET /api/beliefs/:id` | read token | `{ sessionId, beliefs, actions }` decayed, no raw source |
+| `GET /api/search` | read token | requires `AXION_CURSOR_SECRET`; scan budget 40 |
+| `GET /api/export/all` | read token | page of 20 |
+| `GET /api/sessions` | read token | page size 20 |
+| `GET /api/sessions/:id` | read token | one registry record |
+| `GET /api/sessions/:id/export/json` | read token | `?includeRaw=1` for batch rawText |
+| `GET /api/sessions/:id/export/markdown` | read token | never includes raw source |
+| `GET /api/sessions/:id/usage` | read token | cumulative tokens |
+| `GET /api/sse/:id` | read token or `?readToken=` | live-only, no replay |
+| `OPTIONS /api/*` | none | CORS preflight |
+| `GET /dashboard*` | none for HTML/assets | JSON calls still need the token |
+| `GET /styles.css`, `GET /app.js` | none | legacy dashboard asset aliases |
+| `GET /` | none | 302 to `/dashboard` |
 
-Lens is read-only and cannot change agent behaviour. PolyVerdict enforce mode is a separate opt-in path that does change output (it can retry the model and coerce types), triggered only when the caller supplies a schema.
+Proxy POST bodies over `AXION_MAX_BODY_BYTES` (default 1 MiB) return 413. Registry `messageCount` is captured model calls, not inbound `messages[]` length.
 
 ---
 
-## Architecture
+## Auth and CORS
 
-```
-Agent (OpenAI- or Anthropic-compatible, sends x-axion-session)
-  |
-  v
-Axion Worker (Cloudflare)
-  |- auth.ts       resolve passthrough / server-key credentials, or 401
-  |- providers/    match POST /v1/chat/completions or POST /v1/messages
-  |- stream.ts     ReadableStream.tee: caller branch + extraction branch
-  |- content.ts    normalize SSE deltas / non-stream body to assistant text
-  |- extraction.ts waitUntil -> extractBeliefs({ sessionId }) -> DO
-  |- polyverdict/  opt-in enforce: validate + coerce + retry <=3
-  |
-  v
-Model API (UPSTREAM_API_URL, default https://api.openai.com)
+Production deploys must set `AXION_READ_TOKEN` (`wrangler secret put AXION_READ_TOKEN`). Every read route listed above requires it unless `AXION_OPEN_READ=true` in local `.dev.vars`. Do not set `AXION_OPEN_READ` in `wrangler.toml` `[vars]`.
 
-State: SessionDurableObject appends belief batches to DO storage.
-Read:  GET /api/beliefs/:sessionId -> { sessionId, beliefs: ExtractedBelief[] }
-UI:    GET /dashboard
-```
+CORS reflects `Origin` only when it exactly matches `AXION_CORS_ORIGIN`. Unset or mismatched origin means no `Access-Control-Allow-Origin` header. Same-origin dashboard loads still work.
+
+Search cursors are HMAC-signed with server-only `AXION_CURSOR_SECRET`. If that secret is unset, `GET /api/search` returns 503.
+
+Authenticated reads are rate-limited via the Cache API (60 second buckets, keyed by token or client IP):
+
+- 30 `GET /api/search` per token per minute
+- 6 `GET /api/export/all` per token per minute
+- 120 other authenticated reads per token per minute
+
+`GET /api/health` and proxy POSTs are not limited here. 429 includes `Retry-After: 60`. If the Cache API is missing, search and export-all return 503 rather than a fake isolate-local counter.
+
+See [SECURITY.md](./SECURITY.md).
 
 ---
 
@@ -95,82 +109,120 @@ UI:    GET /dashboard
 Requires Node.js 20+ and a Cloudflare account for deploy.
 
 ```bash
-npm install
-cp .dev.vars.example .dev.vars   # optional: set UPSTREAM_API_KEY
+npm ci
+cp .dev.vars.example .dev.vars
+# set AXION_READ_TOKEN, or AXION_OPEN_READ=true for a local demo
+# optional: UPSTREAM_API_KEY if callers will not send their own key
 npm run dev
 export OPENAI_BASE_URL=http://localhost:8787
 # send header  x-axion-session: my-session  on your agent's requests
-# dashboard:   http://localhost:8787/dashboard?session=my-session
+# send header  x-axion-read-token: <token>  on dashboard / API reads
+# dashboard:   http://localhost:8787/dashboard/?session=my-session
 npm run check
 ```
 
-The proxy uses passthrough auth. If your agent already sends its own API key, you do not need `UPSTREAM_API_KEY`. Set it only if you want the Worker to hold the key and let callers omit it.
-
-Anthropic agents route through `POST /v1/messages`:
+Anthropic agents route through `POST /v1/messages` and default to `https://api.anthropic.com`:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:8787
-# Claude Code and other Anthropic Messages clients hit POST /v1/messages
 ```
 
 Deploy your own instance:
 
 ```bash
+npx wrangler secret put UPSTREAM_API_KEY
+npx wrangler secret put AXION_READ_TOKEN
+npx wrangler secret put AXION_CURSOR_SECRET
+npx wrangler secret put AXION_WEBHOOK_SECRET
 npx wrangler deploy
-# -> https://your-axion-worker.dev
 ```
 
 ---
 
 ## Sessions and the dashboard
 
-Beliefs are grouped by session. Send `x-axion-session: <id>` on agent requests to correlate a multi-turn run. If the header is absent the Worker generates a UUID per request and returns it in the `x-axion-session` response header, so a single call is still captured but multi-turn correlation needs the header.
+Beliefs are grouped by session. Send `x-axion-session: <id>` on agent requests. If the header is absent the Worker generates a UUID per request and returns it as `x-axion-session`, so a single call is still captured. Multi-turn correlation needs a stable header.
 
-Open `http://localhost:8787/dashboard`, paste the session id, and press Load. The id also reads from `?session=` in the URL and from `localStorage` (`axion.sessionId`).
+Open `http://localhost:8787/dashboard/`, paste the session id, enter the read token, and press Load. The id also reads from `?session=`. Session id is an identifier, not an authz token.
 
-The beliefs API is unauthenticated in Phase 1. Anyone with a session id can read that session's beliefs. Treat the id like a capability token. See [SECURITY.md](./SECURITY.md).
+SSE is live-only. Initial state comes from `GET /api/beliefs/:id`. There is no `Last-Event-ID` replay.
+
+Axion is a rolling inspect window, not an archive. Export authenticated JSON if you need a snapshot. The 200-batch cap drops the oldest batch.
 
 ---
 
 ## PolyVerdict enforce mode
 
-Enforce mode is off unless the request carries a schema. Two triggers:
+Enforce mode is off unless the request carries a schema. Two triggers, header first:
 
 - Header `x-axion-schema: <JSON Schema as JSON>` (URL-decoded if needed), or
 - Body `response_format: { "type": "json_schema", "json_schema": { "schema": { ... } } }`.
 
-When triggered, the Worker forces a non-streaming upstream call, parses the assistant JSON (stripping Markdown fences), validates it against the schema, and coerces primitive types (`"42"` to number, `"true"`/`"false"` to boolean, number to string). On a violation it appends the errors as a correction message and retries, up to 3 attempts total. On success it returns a provider-shaped JSON response. After 3 failed attempts it returns HTTP 422 with the violations. Lens still extracts from the delivered text.
+The Worker forces a non-streaming upstream call, parses assistant JSON, validates, and coerces primitive types. On a violation it retries, up to 3 attempts total. Success returns provider-shaped JSON whose usage is the sum of every attempt. After 3 failed attempts it returns HTTP 422. Every enforce response sets `x-axion-enforce-attempts`. Lens still extracts from the delivered text.
 
 The schema subset covers `type`, `properties`, `required`, `items`, `enum`, and nesting. Unknown keywords are ignored. There is no semantic or second-model verification.
 
-Example (OpenAI path):
+---
 
-```bash
-curl http://localhost:8787/v1/chat/completions \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -H "x-axion-schema: {\"type\":\"object\",\"properties\":{\"score\":{\"type\":\"number\"}},\"required\":[\"score\"]}" \
-  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Rate this 1-10 as JSON."}]}'
+## Tool-call capture
+
+When an upstream completion includes OpenAI `tool_calls` or Anthropic `tool_use`, the Worker stores them on that turn's batch as `actions`. `GET /api/beliefs/:id` returns `{ sessionId, beliefs, actions }` with actions concatenated in storage order. An empty actions array is still stored so a tool-only turn creates a batch.
+
+Each `ObservedAction` has `id`, `name` (max 128 chars), `provider`, `source` (`tool_calls` or `tool_use`), `argumentFingerprint` (sha256 hex), `argumentFingerprintSource` (`canonical` or `raw` on parse failure), `argumentBytes`, and `sourceClass: "tool_observed"`. Raw arguments are not stored unless `AXION_STORE_TOOL_ARGS=true`, and then only after secret redaction.
+
+Same-turn overlay, no embeddings: for each action, if exactly one belief in that batch has type `intention` or `planning` and empty `actionTaken`, set `actionTaken` to the tool name. If several match, attach to the last one in source order. Never invent a belief. Parsing failure never blocks the proxy.
+
+---
+
+## Belief-batch webhook
+
+After a successful Durable Object store, if `AXION_BELIEF_WEBHOOK_URL` is set, Axion POSTs a redacted batch from `waitUntil`. The observe response is already returned, so a slow or down sink cannot add latency or 5xx the proxy. Failed stores do not notify. Delivery retries twice inside the same waitUntil promise, 2s timeout per attempt. Failures `console.error` and increment `meta.webhookFailures`.
+
+Payload spec `axion.belief_batch.v1`:
+
 ```
+{
+  spec: "axion.belief_batch.v1",
+  sessionId,
+  timestamp,
+  provider?,
+  modelName?,
+  usage?,
+  inboundMessageCount?,
+  callsInSession,
+  beliefs,   // rawText stripped
+  actions,
+  redactions
+}
+```
+
+Headers: `Content-Type: application/json`, `User-Agent: axion-webhook/0.1.0`, `x-axion-session: <id>`. When `AXION_WEBHOOK_SECRET` is set, `x-axion-signature: sha256=<hex>` is HMAC-SHA256 of the raw body. If the secret is unset, Axion omits the signature and refuses to send unless `AXION_WEBHOOK_ALLOW_UNSIGNED=true` (local only).
+
+Langfuse mapping, documented not coded: put the JSON under `metadata.axion` on a generation span. Honeycomb/OTLP mapping: one event `axion.belief_batch` with `axion.session_id`, `axion.belief_count`, `axion.action_names`, `axion.belief_types`. This cycle does not ship an OTLP client.
 
 ---
 
 ## Belief extraction
 
-| Type | Trigger phrases | Baseline confidence |
-| --- | --- | --- |
-| Causal | "because X", "because of X", "since X", "due to X", "as a result of X" | 0.8 to 0.85 |
-| Assumption | "assuming X", "presumably X", "I'll assume X", "if X then Y" | 0.6 to 0.65 |
-| Intention | "I'll X", "I'm going to X", "let me X", "I should X", "I plan/intend to X" | 0.75 |
-| Evidence | "based on X", "according to X", "from the X", "the error says X" | 0.7 to 0.85 |
+| Type | Baseline |
+| --- | --- |
+| causal | 0.7 |
+| assumption | 0.5 |
+| intention | 0.8 |
+| evidence | 0.6 |
+| uncertainty | 0.3 |
+| contradiction | 0.4 |
+| planning | 0.6 |
+| self-correction | 0.5 |
 
-Confidence starts at the baseline and each marker found near the match adds its delta:
+Markers in an 80-character window, summed per distinct category, then clamped to `[0.1, 1.0]` at extraction:
 
-- definitely / certainly / absolutely: +0.2
-- probably / likely: +0.1
-- might / could be / possibly / may: -0.2
-- not sure / uncertain / unsure: -0.3
+- certain: +0.2
+- likely: +0.1
+- possible: -0.2
+- uncertain: -0.3
 
-The result is clamped to `[0.1, 1.0]`. This is a linguistic heuristic, not a truth signal. It reflects how the model hedged, nothing more.
+Read-time decay multiplies stored confidence by `0.9 ^ turnsAgo`. The dashboard treats values below 0.4 as low confidence. This is a linguistic heuristic, not a truth signal.
 
 ---
 
@@ -179,54 +231,28 @@ The result is clamped to `[0.1, 1.0]`. This is a linguistic heuristic, not a tru
 ```
 axion/
 |- src/
-|  |- proxy/
-|  |  |- index.ts              Worker entry: routing, observe + enforce branches
-|  |  |- auth.ts               passthrough / server-key credential resolution
-|  |  |- stream.ts             ReadableStream.tee + SSE parsing (OpenAI + Anthropic)
-|  |  |- content.ts            assistant-text normalization per provider
-|  |  |- extraction.ts         waitUntil glue to extractBeliefs + DO store
-|  |  |- beliefs.ts            GET /api/beliefs/:id -> DO
-|  |  |- routes.ts             dashboard static asset handler
-|  |  |- providers/            openai + anthropic adapters, matcher, interface
-|  |  |- types.ts              Env + proxy request/response types
-|  |- lens/
-|  |  |- patterns.ts           regex belief patterns + confidence markers
-|  |  |- extract.ts            extraction engine (additive confidence, clamp)
-|  |  |- types.ts              ExtractedBelief; BeliefNode/BeliefDAG (@planned)
-|  |- polyverdict/
-|  |  |- schema.ts             JSON Schema subset validator + coercion
-|  |  |- enforce.ts            trigger detection, retry loop, hint injection
-|  |  |- types.ts              enforce types
-|  |- state/
-|  |  |- SessionDurableObject.ts   append batches, flatten on GET
-|  |  |- sessionBeliefs.ts         pure flatten / sessionId helpers
-|  |- dashboard/               React via CDN, no build step
-|- BUILD-SPEC.md               locked scope (source of truth)
-|- SPEC.md  TECHNICAL.md  SPEC-PolyVerdict.md  PLAN.md
+|  |- proxy/          Worker entry, providers, read APIs, extraction glue
+|  |- lens/           regex patterns + extractBeliefs
+|  |- polyverdict/    opt-in schema enforce
+|  |- redact/         secret regex before persist
+|  |- state/          SessionDurableObject + registry
+|  |- dashboard/      static React UI, no bundler
 |- wrangler.toml  tsconfig.json  package.json
+|- AGENT.md  README.md  SECURITY.md  CONTRIBUTING.md
 ```
-
----
-
-## Tech stack
-
-- **Runtime:** Cloudflare Workers.
-- **State:** Durable Objects, one per session, backed by Durable Object storage.
-- **Extraction:** regex rules only, no model call, sub-millisecond.
-- **Dashboard:** React from CDN, no bundler, served as static assets.
-- **Runtime dependencies:** none. `wrangler`, `typescript`, and `vitest` are dev-only.
 
 ---
 
 ## Known issues
 
-- Loop (Phase 2) and Gate (Phase 3) are not implemented.
-- The beliefs API is unauthenticated. A session id is a read capability. See [SECURITY.md](./SECURITY.md).
-- Session storage is unbounded. Beliefs append to Durable Object storage and are never trimmed. Long-lived session ids will grow without limit. There is no rate limiting yet.
-- Extraction is a regex heuristic. It misses reasoning that does not use the trigger phrases and will mis-parse unusual phrasing. Confidence reflects hedging words, not correctness.
-- Without an `x-axion-session` header each request lands under a fresh UUID, so multi-turn correlation depends on the caller sending a stable id.
-- The dashboard loads React from a CDN and needs internet access for that page. The proxy itself does not.
-- Enforce mode always returns non-streaming JSON, even if the client asked to stream. This is intentional so the full payload can be validated.
+- Loop and Gate are not implemented.
+- Belief DAG, parent/child edges, and root-cause routes are not implemented. The store is a flat timeline.
+- The lens is regex. It misses reasoning that does not use the trigger phrases.
+- SSE is live-only. Disconnects lose events that happened while you were gone.
+- Secret regex is not PII completeness.
+- The inspect window is 200 batches per session and 5000 registry rows.
+- Two providers only: OpenAI Chat Completions and Anthropic Messages.
+- Dashboard this cycle is paste-session plus a read-token field and an error banner. Session picker, live SSE, usage, and export buttons are later work.
 
 ---
 
@@ -238,11 +264,3 @@ axion/
 ## License
 
 MIT. See [LICENSE](./LICENSE).
-
----
-
-<div align="center">
-
-**LatticeAG** - Agents, together.
-
-</div>

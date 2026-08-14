@@ -49,23 +49,30 @@ export function resolveUpstreamHeaders(
   const serverKey = env.UPSTREAM_API_KEY?.trim();
 
   if (callerAuth) {
-    // Passthrough: caller owns their credentials (direct key or gateway token).
     headers.set("Authorization", callerAuth);
-  } else if (callerAnthropicKey) {
+  }
+  if (callerAnthropicKey) {
     headers.set("x-api-key", callerAnthropicKey);
-  } else if (serverKey) {
+  } else if (!callerAuth && serverKey) {
     if (provider === "anthropic") {
       headers.set("x-api-key", serverKey);
     } else {
       headers.set("Authorization", `Bearer ${serverKey}`);
     }
-  } else {
+  } else if (!callerAuth) {
     return {
       ok: false,
       response: authError(
         "Provide Authorization or x-api-key, or configure UPSTREAM_API_KEY"
       ),
     };
+  }
+
+  // Claude-adjacent tools sometimes send Bearer. Anthropic wants x-api-key.
+  // Dual-set when the caller sent Authorization and omitted x-api-key.
+  if (provider === "anthropic" && callerAuth && !callerAnthropicKey) {
+    const bearer = bearerToken(callerAuth);
+    if (bearer) headers.set("x-api-key", bearer);
   }
 
   // Anthropic requires a version header; default it when we did a passthrough
@@ -78,6 +85,13 @@ export function resolveUpstreamHeaders(
   }
 
   return { ok: true, headers };
+}
+
+/** Extract the token from `Bearer <token>`, or null if the scheme does not match. */
+function bearerToken(authorization: string): string | null {
+  const match = /^Bearer\s+(\S+)/i.exec(authorization);
+  const token = match?.[1]?.trim();
+  return token || null;
 }
 
 /** Build a 401 JSON error response in the `{ error: { message } }` shape. */

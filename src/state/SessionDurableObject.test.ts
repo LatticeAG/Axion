@@ -7,6 +7,9 @@ import { describe, it, expect } from "vitest";
 import { SessionDurableObject } from "./SessionDurableObject";
 import type { ExtractionResult } from "../proxy/types";
 import type { ExtractedBelief } from "../lens/types";
+import { createMemoryDurableObjectState } from "./memoryDurableObject";
+import type { BeliefBatch } from "./sessionBeliefs";
+import type { ObservedAction } from "../proxy/actions";
 
 function belief(id: string): ExtractedBelief {
   return {
@@ -35,18 +38,8 @@ function makeResult(
   };
 }
 
-/** Minimal in-memory DurableObjectState stand-in. */
-function makeState(idString = "opaque-do-id-abc123") {
-  const store = new Map<string, unknown>();
-  return {
-    id: { toString: () => idString },
-    storage: {
-      get: async (key: string) => store.get(key),
-      put: async (key: string, value: unknown) => {
-        store.set(key, value);
-      },
-    },
-  } as unknown as DurableObjectState;
+function makeState(idString = "opaque-do-id-abc123", initial: Record<string, unknown> = {}) {
+  return createMemoryDurableObjectState(idString, initial);
 }
 
 function post(
@@ -190,9 +183,162 @@ describe("SessionDurableObject", () => {
     expect(exported.calls).toBe(2);
   });
 
+  it("persists inboundMessageCount from the extraction result", async () => {
+    const doInstance = new SessionDurableObject(makeState());
+    await doInstance.fetch(
+      post("inbound-session", ["a"], {
+        messageCount: 4,
+        inboundMessageCount: 4,
+      }),
+    );
+    await doInstance.fetch(
+      post("inbound-session", ["b"], {
+        messageCount: 7,
+      }),
+    );
+
+    const response = await doInstance.fetch(
+      new Request("https://internal/export?sessionId=inbound-session"),
+    );
+    const exported = (await response.json()) as {
+      batches: Array<{ messageCount?: number; inboundMessageCount?: number }>;
+    };
+    expect(exported.batches[0]?.messageCount).toBe(4);
+    expect(exported.batches[0]?.inboundMessageCount).toBe(4);
+    expect(exported.batches[1]?.messageCount).toBe(7);
+    expect(exported.batches[1]?.inboundMessageCount).toBe(7);
+  });
+
+  it("persists redactions from the extraction result", async () => {
+    const doInstance = new SessionDurableObject(makeState());
+    await doInstance.fetch(
+      post("redact-session", ["a"], {
+        redactions: 3,
+      }),
+    );
+
+    const response = await doInstance.fetch(
+      new Request("https://internal/export?sessionId=redact-session"),
+    );
+    const exported = (await response.json()) as {
+      batches: Array<{ redactions?: number }>;
+    };
+    expect(exported.batches[0]?.redactions).toBe(3);
+  });
+
+  it("persists actions and concatenates them on GET /beliefs", async () => {
+    const lookup: ObservedAction = {
+      id: "call_1",
+      name: "lookup",
+      provider: "openai",
+      source: "tool_calls",
+      argumentFingerprint: "aa",
+      argumentFingerprintSource: "canonical",
+      argumentBytes: 2,
+      sourceClass: "tool_observed",
+    };
+    const write: ObservedAction = {
+      ...lookup,
+      id: "toolu_1",
+      name: "write",
+      provider: "anthropic",
+      source: "tool_use",
+    };
+    const doInstance = new SessionDurableObject(makeState());
+    await doInstance.fetch(post("tool-session", ["a"], { actions: [lookup] }));
+    await doInstance.fetch(post("tool-session", ["b"], { actions: [write] }));
+
+    const res = await doInstance.fetch(new Request("https://internal/beliefs"));
+    const body = (await res.json()) as {
+      sessionId: string;
+      beliefs: ExtractedBelief[];
+      actions: ObservedAction[];
+    };
+    expect(body.sessionId).toBe("tool-session");
+    expect(body.beliefs.map((entry) => entry.id)).toEqual(["a", "b"]);
+    expect(body.actions.map((action) => action.id)).toEqual(["call_1", "toolu_1"]);
+  });
+
   it("404s on unknown routes", async () => {
     const doInstance = new SessionDurableObject(makeState());
     const res = await doInstance.fetch(new Request("https://internal/nope"));
     expect(res.status).toBe(404);
+  });
+
+  it("reads an unmigrated legacy beliefs array and stored sessionName", async () => {
+    const legacy: BeliefBatch[] = [
+      {
+        beliefs: [belief("legacy-a"), belief("legacy-b")],
+        rawText: "raw",
+        timestamp: 1,
+      },
+    ];
+    const doInstance = new SessionDurableObject(
+      makeState("opaque-do-id-abc123", {
+        beliefs: legacy,
+        sessionName: "legacy-human-name",
+      }),
+    );
+
+    const res = await doInstance.fetch(new Request("https://internal/beliefs"));
+    const body = (await res.json()) as { sessionId: string; beliefs: ExtractedBelief[] };
+
+    expect(body.sessionId).toBe("legacy-human-name");
+    expect(body.beliefs.map((entry) => entry.id)).toEqual(["legacy-a", "legacy-b"]);
+  });
+
+  it("migrates a legacy beliefs array on the next write", async () => {
+    const doInstance = new SessionDurableObject(
+      makeState("opaque-do-id-abc123", {
+        beliefs: [
+          {
+            beliefs: [belief("old")],
+            rawText: "raw",
+            timestamp: 1,
+          },
+        ],
+        sessionName: "migrated-session",
+      }),
+    );
+
+    await doInstance.fetch(post("migrated-session", ["new"]));
+    const res = await doInstance.fetch(new Request("https://internal/beliefs"));
+    const body = (await res.json()) as { sessionId: string; beliefs: ExtractedBelief[] };
+
+    expect(body.sessionId).toBe("migrated-session");
+    expect(body.beliefs.map((entry) => entry.id)).toEqual(["old", "new"]);
+    expect(body.beliefs[0]!.confidence).toBeCloseTo(0.7 * 0.9, 8);
+    expect(body.beliefs[1]!.confidence).toBeCloseTo(0.7, 8);
+  });
+
+  it("returns callsInSession on store and counts webhook failures on meta", async () => {
+    const state = makeState();
+    const doInstance = new SessionDurableObject(state);
+
+    const first = (await (
+      await doInstance.fetch(post("hook-session", ["a"]))
+    ).json()) as { ok: boolean; count: number; callsInSession: number };
+    expect(first).toEqual({ ok: true, count: 1, callsInSession: 1 });
+
+    const second = (await (
+      await doInstance.fetch(post("hook-session", ["b", "c"]))
+    ).json()) as { callsInSession: number; count: number };
+    expect(second.callsInSession).toBe(2);
+    expect(second.count).toBe(2);
+
+    const bump = await doInstance.fetch(
+      new Request("https://internal/webhook-failure", { method: "POST" }),
+    );
+    expect(bump.status).toBe(200);
+    await doInstance.fetch(
+      new Request("https://internal/webhook-failure", { method: "POST" }),
+    );
+
+    const meta = (await state.storage.get("meta")) as {
+      webhookFailures?: number;
+      sessionName?: string;
+    };
+    expect(meta.sessionName).toBe("hook-session");
+    expect(meta.webhookFailures).toBe(2);
   });
 });
