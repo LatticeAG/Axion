@@ -29,6 +29,8 @@ new_sqlite_classes = ["SessionRegistryDurableObject"]
 directory = "./src/dashboard"
 binding = "ASSETS"
 run_worker_first = true
+html_handling = "none"
+not_found_handling = "none"
 
 # Vars / secrets:
 #   UPSTREAM_OPENAI_URL     - OpenAI adapter base (default https://api.openai.com)
