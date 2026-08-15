@@ -127,10 +127,36 @@ function scanPatterns(text: string): PatternMatch[] {
 }
 
 /**
- * Remove intersecting matches, retaining the one with the higher calculated
- * confidence. Source position and pattern order provide deterministic
- * tie-breakers. This covers partial overlaps as well as containment.
+ * Remove duplicate matches, retaining the one with the higher calculated
+ * confidence per span. Source position and pattern order provide
+ * deterministic tie-breakers.
+ *
+ * Containment is belief-preserving (issue #3): a kept match only suppresses a
+ * later candidate it STRICTLY contains. A candidate whose span encloses or
+ * exactly matches the kept span is the enclosing belief (e.g. an assumption
+ * clause wrapping a trailing "I'll proceed" intention) or the
+ * duplicate-correct replacement, so it is kept and strictly-contained
+ * followers still collapse against it. Crossing/partial overlaps keep the
+ * pre-existing first-come (confidence-ranked) wins semantics.
  */
+/**
+ * Marker families whose outer-vs-inner containment describes ONE event
+ * claimed by sibling markers (partial-overlap semantics), not two distinct
+ * beliefs. "But actually, X" fires BOTH the broader contradiction transition
+ * and the inner self-correction "actually, X" over the same clause - the
+ * higher-confidence self-correction must keep the whole claim, the enclosing
+ * contradiction is not a second belief. Enclosing-belief protection (issue
+ * #3) only applies OUTSIDE these families: an assumption wrapping a trailing
+ * intention, or a causal clause feeding an "I believe" intention, are two
+ * genuinely distinct beliefs and both must survive.
+ */
+const QUALIFICATION_FAMILY: ReadonlySet<BeliefType> = new Set([
+  'contradiction',
+  'self-correction',
+]);
+const sameQualificationFamily = (a: BeliefType, b: BeliefType): boolean =>
+  QUALIFICATION_FAMILY.has(a) && QUALIFICATION_FAMILY.has(b);
+
 function dedupeOverlaps<T extends PatternMatch & { confidence: number }>(matches: T[]): T[] {
   const ranked = [...matches].sort(
     (a, b) =>
@@ -142,11 +168,28 @@ function dedupeOverlaps<T extends PatternMatch & { confidence: number }>(matches
 
   for (const candidate of ranked) {
     const candidateEnd = candidate.index + candidate.fullMatch.length;
-    const overlaps = kept.some((existing) => {
+    // A kept match suppresses an overlapping candidate, with one exception
+    // (issue #3): a candidate that ENCLOSES the kept match - starts strictly
+    // before it and ends at or after it - is an enclosing belief (e.g. an
+    // assumption clause wrapping a trailing "I'll proceed" intention), so
+    // BOTH survive. Identical spans and same-start containment (two markers
+    // claiming the same anchored text, e.g. "I will assume X": the inner,
+    // higher-confidence match wins and the outer collapses into it), and
+    // crossing/partial overlaps, all keep the pre-existing suppression
+    // semantics.
+    const dropped = kept.some((existing) => {
       const existingEnd = existing.index + existing.fullMatch.length;
-      return candidate.index < existingEnd && existing.index < candidateEnd;
+      const intersects = candidate.index < existingEnd && existing.index < candidateEnd;
+      if (!intersects) return false;
+      const candidateEncloses =
+        candidate.index < existing.index && candidateEnd >= existingEnd;
+      if (!candidateEncloses) return true;
+      // Enclosing protection only keeps genuinely DIFFERENT beliefs. Sibling
+      // markers for one qualification event still collapse (partial-overlap
+      // semantics preserved).
+      return sameQualificationFamily(candidate.type, existing.type);
     });
-    if (!overlaps) kept.push(candidate);
+    if (!dropped) kept.push(candidate);
   }
 
   return kept.sort((a, b) => a.index - b.index || a.patternIndex - b.patternIndex);
