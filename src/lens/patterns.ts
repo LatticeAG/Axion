@@ -33,6 +33,20 @@ const CLAUSE_BODY = String.raw`(?:[^.;!?\n]|\.(?!\s|$))`;
 const CLAUSE_END = String.raw`(?:[;!?\n]|\.(?=\s|$)|$)`;
 
 /**
+ * A comma that introduces a first-person belief/intention clause
+ * ("..., I believe X" / "..., I'll X" / "..., I think X") also terminates a
+ * preceding causal/assumption capture (issue #3). Without this, the capture
+ * for the enclosing causal/assumption belief swallows the trailing intention
+ * clause wholesale ("the test passed, I believe the fix works"), which both
+ * pollutes the stored belief text and previously made the dedupe layer drop
+ * the entire enclosing belief.
+ *
+ * Intentionally narrow: only ', I <marker>' boundaries, so commas inside an
+ * unbroken clause ("the endpoint, port, and path are correct") never split.
+ */
+const CLAUSE_COMMA_END = String.raw`(?:,(?=\s*i\s+(?:believe|think|'ll|will|intend|plan\b))|[;!?\n]|\.(?=\s|$)|$)`;
+
+/**
  * Build a case-insensitive clause-bounded pattern from a string source that
  * interpolates {@link CLAUSE_BODY} for its belief-text captures. All captures
  * stay non-greedy and length-bounded exactly like the hand-written literals
@@ -164,7 +178,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'because-of',
     type: 'causal',
-    pattern: clausePattern(String.raw`\bbecause of\s+(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
+    pattern: clausePattern(String.raw`\bbecause of\s+(${CLAUSE_BODY}{2,120}?)${CLAUSE_COMMA_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.causal,
   },
@@ -172,7 +186,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'because',
     type: 'causal',
-    pattern: clausePattern(String.raw`\bbecause\s+(?!of\b)(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
+    pattern: clausePattern(String.raw`\bbecause\s+(?!of\b)(${CLAUSE_BODY}{2,120}?)${CLAUSE_COMMA_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.causal,
   },
@@ -180,7 +194,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'since-causal',
     type: 'causal',
-    pattern: clausePattern(String.raw`\bsince\s+(?!the\s+\d|\d{4})(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
+    pattern: clausePattern(String.raw`\bsince\s+(?!the\s+\d|\d{4})(${CLAUSE_BODY}{2,120}?)${CLAUSE_COMMA_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.causal,
   },
@@ -188,7 +202,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'due-to',
     type: 'causal',
-    pattern: clausePattern(String.raw`\b(?:due to|as a result of)\s+(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
+    pattern: clausePattern(String.raw`\b(?:due to|as a result of)\s+(${CLAUSE_BODY}{2,120}?)${CLAUSE_COMMA_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.causal,
   },
@@ -198,7 +212,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'assuming',
     type: 'assumption',
-    pattern: clausePattern(String.raw`\b(?:assuming|presumably)\s+(?:that\s+)?(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
+    pattern: clausePattern(String.raw`\b(?:assuming|presumably)\s+(?:that\s+)?(${CLAUSE_BODY}{2,120}?)${CLAUSE_COMMA_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.assumption,
   },
@@ -206,7 +220,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'i-assume',
     type: 'assumption',
-    pattern: clausePattern(String.raw`\b(?:i(?:'ll| will)|let's|let us) assume\s+(?:that\s+)?(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
+    pattern: clausePattern(String.raw`\b(?:i(?:'ll| will)|let's|let us) assume\s+(?:that\s+)?(${CLAUSE_BODY}{2,120}?)${CLAUSE_COMMA_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.assumption,
   },
@@ -214,7 +228,7 @@ export const BELIEF_PATTERNS: BeliefPattern[] = [
   {
     label: 'im-assuming',
     type: 'assumption',
-    pattern: clausePattern(String.raw`\bi(?:'m| am) assuming\s+(?:that\s+)?(${CLAUSE_BODY}{2,120}?)${CLAUSE_END}`),
+    pattern: clausePattern(String.raw`\bi(?:'m| am) assuming\s+(?:that\s+)?(${CLAUSE_BODY}{2,120}?)${CLAUSE_COMMA_END}`),
     group: 1,
     confidence: BELIEF_TYPE_CONFIDENCE_BASELINES.assumption,
   },

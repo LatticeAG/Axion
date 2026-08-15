@@ -387,6 +387,48 @@ describe('extractBeliefs - dot is not a clause end inside paths/URLs', () => {
   });
 });
 
+describe('extractBeliefs - containment-aware overlap dedupe (issue #3)', () => {
+  it('keeps an enclosing assumption alongside a nested intention', async () => {
+    const beliefs = await extractBeliefs(
+      "Assuming the endpoint is example.xyz for now, I'll proceed",
+      fixedOpts('issue-3a'),
+    );
+    const assumption = findByType(beliefs, 'assumption');
+    expect(assumption.length).toBe(1);
+    expect(assumption[0]!.belief).toContain('the endpoint is example.xyz for now');
+    const intent = findByType(beliefs, 'intention');
+    expect(intent.length).toBe(1);
+    expect(intent[0]!.belief).toBe('proceed');
+  });
+
+  it('keeps a leading causal belief alongside a nested intention', async () => {
+    const beliefs = await extractBeliefs(
+      'Because the test passed, I believe the fix works',
+      fixedOpts('issue-3b'),
+    );
+    const causal = findByType(beliefs, 'causal');
+    expect(causal.length).toBe(1);
+    expect(causal[0]!.belief).toBe('the test passed');
+    const intent = findByType(beliefs, 'intention');
+    expect(intent.length).toBe(1);
+    expect(intent[0]!.belief).toBe('the fix works');
+  });
+
+  it('still collapses two patterns matching the identical span (first pattern wins)', async () => {
+    // "approach" here matches BOTH planning-explicit ("the plan is X") and
+    // uncertainty-hedge ("this could be wrong ...") over the identical span
+    // "the plan is to use the approach that could be wrong". They must still
+    // collapse to a single belief, resolved by confidence then pattern order.
+    const beliefs = await extractBeliefs(
+      'The plan is to use the approach that could be wrong.',
+      fixedOpts('issue-3c'),
+    );
+    expect(beliefs.length).toBe(1);
+    expect(beliefs[0]!.type).toBe('planning');
+    expect(beliefs[0]!.belief.toLowerCase()).toContain('the plan is');
+  });
+});
+
 describe('extractBeliefs - belief shape', () => {
   it('stamps id, timestamp, rawText and line', async () => {
     const beliefs = await extractBeliefs(
