@@ -13,6 +13,17 @@ Agent cognitive middleware. A proxy that reads what an agent believes from its o
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg?logo=opensourceinitiative&logoColor=white)](./LICENSE)
 [![Open Source](https://img.shields.io/badge/Open-Source-black.svg?logo=github&logoColor=white)](https://github.com/LatticeAG/Axion)
 
+<p align="center">
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#why-axion">Why Axion</a> ·
+  <a href="#how-it-works">How It Works</a> ·
+  <a href="#what-is-shipped">Features</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#verification">Verification</a> ·
+  <a href="#file-structure">File Tree</a> ·
+  <a href="#known-issues">Known Issues</a>
+</p>
+
 </div>
 
 ---
@@ -29,6 +40,37 @@ Agent  <->  Axion (CF Worker)  <->  Model API
 
 ---
 
+## Why Axion
+
+- **Zero instrumentation** - point an existing agent at Axion by overriding the base URL. No code changes, no SDK, no upload.
+- **Zero added latency** - `ReadableStream.tee()` streams the upstream response straight back untouched; belief extraction runs in `waitUntil()` after delivery.
+- **The "why" layer** - trace backends record what an agent *did*. Axion reads what the agent *believed* from its own streamed output: assumptions, intentions, contradictions, self-corrections.
+- **Local-first inspection** - per-session belief timelines behind your own read token on your own Worker. Export JSON for a snapshot; nothing is a hosted SaaS.
+- **Feeds your stack, doesn't replace it** - belief batches map onto Langfuse generation-span metadata and Honeycomb/OTLP events instead of competing with them.
+
+### How Axion is different
+
+Hosted agent-observability platforms detect what agents did wrong from traces, tool calls, and post-hoc reconstruction. Axion reads what agents believed in real time from the model's own output, self-hosted, MIT-licensed. See [How this compares](#how-this-compares).
+
+## How It Works
+
+```mermaid
+flowchart LR
+  Agent -->|POST /v1/chat/completions or /v1/messages| Axion[Axion Worker]
+  Axion -->|forward upstream, stream back untouched| Agent
+  Axion <-->|passthrough + upstream key| API[Model API]
+  Axion -.->|waitUntil: regex lens + secret redact| DO[(Session DO + Registry)]
+  DO -->|read-token APIs + SSE| Dash[Dashboard / API reads]
+  DO -.->|axion.belief_batch.v1| Hook[Webhook sink]
+```
+
+1. The agent sends a normal OpenAI or Anthropic request through Axion (base URL override + `x-axion-session` header).
+2. Axion forwards it upstream and streams the response back with zero added latency.
+3. After delivery, the regex lens extracts belief fragments from visible assistant text, stamps linguistic confidence, redacts secrets, and stores the batch in the session Durable Object.
+4. You inspect via the dashboard or read APIs (`GET /api/beliefs/:id`, SSE replay, export) - all behind `AXION_READ_TOKEN`.
+
+---
+
 ## What is shipped
 
 - **OpenAI Chat Completions proxy.** `POST /v1/chat/completions`, streaming and non-streaming. Default base `https://api.openai.com`.
@@ -38,9 +80,11 @@ Agent  <->  Axion (CF Worker)  <->  Model API
 - **Eight belief types.** causal, assumption, intention, evidence, uncertainty, contradiction, planning, self-correction. Baselines live in `BELIEF_TYPE_CONFIDENCE_BASELINES`. Markers nudge, then clamp to `[0.1, 1.0]` at extraction. Read-time decay is `0.9 ^ turnsAgo` (newest batch is 0). Decay may go below 0.1. Stored batches keep original confidence.
 - **Sharded session store.** Up to 200 batches per session (`AXION_MAX_BELIEF_BATCHES`, clamped `[20, 1000]`). Legacy single-key `"beliefs"` arrays migrate on write. Registry holds at most 5000 sessions.
 - **Read APIs behind a token.** `AXION_READ_TOKEN` via `Authorization: Bearer <token>` or `x-axion-read-token`. SSE also accepts `?readToken=` because EventSource cannot set headers. Local escape: `AXION_OPEN_READ=true`. Missing token fails closed.
-- **Session registry.** `GET /api/sessions` returns 20 records per page. Search, export, usage, and live SSE exist and require the same token.
+- **Session registry.** `GET /api/sessions` returns 20 records per page. `GET /api/sessions/:id/turns` returns the per-batch turn window. Search, export, usage, and live SSE exist and require the same token.
+- **SSE replay.** `GET /api/sse/:id` live-streams beliefs. Replay missed events with `?since=` and `Last-Event-ID`. Clients receive `event:gap` when the cursor is outside the retained window.
+- **Idle TTL.** Optional `AXION_SESSION_TTL_HOURS` idle-expires sessions via a Durable Object alarm (`deleteAll`).
 - **Public payloads omit raw model text.** `GET /api/beliefs/:id` sends `rawText: ""`. JSON export includes `batches[].rawText` only with `?includeRaw=1`. Markdown never includes raw source.
-- **Local dashboard.** Paste or link a session id. Send the read token from a local field. Full session picker, SSE live-append, usage panel, and export buttons are not in this UI yet.
+- **Local dashboard.** Session picker, SSE live-append with replay, usage panel, actions panel, and export buttons are shipped. Send the read token from a local field.
 - **PolyVerdict enforce mode (opt-in).** JSON Schema validate/coerce, retry up to 3 times. Off by default. Usage on success is summed across attempts.
 - **Native tool-call capture.** OpenAI `tool_calls` and Anthropic `tool_use` become `ObservedAction` records on the same batch. Beliefs GET returns `{ sessionId, beliefs, actions }`.
 - **Signed belief-batch webhook.** After a successful store, Axion POSTs `axion.belief_batch.v1` to `AXION_BELIEF_WEBHOOK_URL` in `waitUntil`. HMAC header when `AXION_WEBHOOK_SECRET` is set.
@@ -76,7 +120,8 @@ Agent  <->  Axion (CF Worker)  <->  Model API
 | `GET /api/sessions/:id/export/json` | read token | `?includeRaw=1` for batch rawText |
 | `GET /api/sessions/:id/export/markdown` | read token | never includes raw source |
 | `GET /api/sessions/:id/usage` | read token | cumulative tokens |
-| `GET /api/sse/:id` | read token or `?readToken=` | live-only, no replay |
+| `GET /api/sessions/:id/turns` | read token | per-batch turn window |
+| `GET /api/sse/:id` | read token or `?readToken=` | replay via `?since=` / `Last-Event-ID`; `event:gap` outside window |
 | `OPTIONS /api/*` | none | CORS preflight |
 | `GET /dashboard*` | none for HTML/assets | JSON calls still need the token |
 | `GET /styles.css`, `GET /app.js` | none | legacy dashboard asset aliases |
@@ -103,6 +148,30 @@ Authenticated reads are rate-limited via the Cache API (60 second buckets, keyed
 `GET /api/health` and proxy POSTs are not limited here. 429 includes `Retry-After: 60`. If the Cache API is missing, search and export-all return 503 rather than a fake isolate-local counter.
 
 See [SECURITY.md](./SECURITY.md).
+
+---
+
+## Configuration
+
+All settings are Worker vars/secrets (see `wrangler.toml` comments and `.dev.vars.example`). Every name below is read from `env` in `src/proxy/types.ts` or the session Durable Object.
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `UPSTREAM_OPENAI_URL` | OpenAI adapter base | `https://api.openai.com` |
+| `UPSTREAM_ANTHROPIC_URL` | Anthropic adapter base | `https://api.anthropic.com` |
+| `UPSTREAM_API_URL` | Legacy OpenAI-only override (used only when `UPSTREAM_OPENAI_URL` is unset) | `https://api.openai.com` |
+| `UPSTREAM_API_KEY` | Fallback upstream key, used only when the caller sends no `Authorization` / `x-api-key` (secret) | unset |
+| `AXION_READ_TOKEN` | Required Bearer / `x-axion-read-token` / `?readToken=` for every read API in production (secret) | unset = fail closed |
+| `AXION_OPEN_READ` | Local escape, must be the string `"true"`. Never set in production | unset |
+| `AXION_CORS_ORIGIN` | Exact `Origin` to reflect; unset or mismatch means no CORS headers | unset |
+| `AXION_CURSOR_SECRET` | HMAC for `/api/search` cursors; search returns 503 when unset (secret) | unset |
+| `AXION_MAX_BODY_BYTES` | Proxy POST bodies over this return 413 | 1 MiB |
+| `AXION_MAX_BELIEF_BATCHES` | Batches kept per session, clamped `[20, 1000]`; oldest drop first | 200 |
+| `AXION_SESSION_TTL_HOURS` | Idle session expiry via DO alarm (`deleteAll`), clamped `[1, 8760]`; unset = off | unset |
+| `AXION_STORE_TOOL_ARGS` | Persist redacted raw tool arguments (`"true"`); otherwise only fingerprints | unset = off |
+| `AXION_BELIEF_WEBHOOK_URL` | POST `axion.belief_batch.v1` after each successful store | unset = off |
+| `AXION_WEBHOOK_SECRET` | HMAC-SHA256 `x-axion-signature` for webhooks (secret) | unset |
+| `AXION_WEBHOOK_ALLOW_UNSIGNED` | Local only: allow unsigned webhook POSTs | unset = refuse |
 
 ---
 
@@ -145,9 +214,9 @@ npx wrangler deploy
 
 Beliefs are grouped by session. Send `x-axion-session: <id>` on agent requests. If the header is absent the Worker generates a UUID per request and returns it as `x-axion-session`, so a single call is still captured. Multi-turn correlation needs a stable header.
 
-Open `http://localhost:8787/dashboard/`, paste the session id, enter the read token, and press Load. The id also reads from `?session=`. Session id is an identifier, not an authz token.
+Open `http://localhost:8787/dashboard/`, pick a session or paste an id, enter the read token, and press Load. The id also reads from `?session=`. Session id is an identifier, not an authz token.
 
-SSE is live-only. Initial state comes from `GET /api/beliefs/:id`. There is no `Last-Event-ID` replay.
+SSE live-appends new beliefs and can replay missed events with `?since=` or `Last-Event-ID`. Cursors outside the retained window arrive as `event:gap`. Initial state also comes from `GET /api/beliefs/:id` or `GET /api/sessions/:id/turns`.
 
 Axion is a rolling inspect window, not an archive. Export authenticated JSON if you need a snapshot. The 200-batch cap drops the oldest batch.
 
@@ -198,7 +267,7 @@ Payload spec `axion.belief_batch.v1`:
 }
 ```
 
-Headers: `Content-Type: application/json`, `User-Agent: axion-webhook/0.1.0`, `x-axion-session: <id>`. When `AXION_WEBHOOK_SECRET` is set, `x-axion-signature: sha256=<hex>` is HMAC-SHA256 of the raw body. If the secret is unset, Axion omits the signature and refuses to send unless `AXION_WEBHOOK_ALLOW_UNSIGNED=true` (local only).
+Headers: `Content-Type: application/json`, `User-Agent: axion-webhook/0.2.0`, `x-axion-session: <id>`. When `AXION_WEBHOOK_SECRET` is set, `x-axion-signature: sha256=<hex>` is HMAC-SHA256 of the raw body. If the secret is unset, Axion omits the signature and refuses to send unless `AXION_WEBHOOK_ALLOW_UNSIGNED=true` (local only).
 
 Langfuse mapping, documented not coded: put the JSON under `metadata.axion` on a generation span. Honeycomb/OTLP mapping: one event `axion.belief_batch` with `axion.session_id`, `axion.belief_count`, `axion.action_names`, `axion.belief_types`. This cycle does not ship an OTLP client.
 
@@ -228,6 +297,18 @@ Read-time decay multiplies stored confidence by `0.9 ^ turnsAgo`. The dashboard 
 
 ---
 
+## Verification
+
+`npm run check` is `tsc --noEmit && vitest run` (see `package.json`). Version lockstep (`package.json` = `/api/health` = webhook `User-Agent`) is enforced by `src/proxy/version.test.ts`.
+
+| Suite | Result |
+| --- | --- |
+| TypeScript typecheck (`tsc --noEmit`) | clean |
+| Vitest | 43 files, 458 tests, all passing |
+| Runtime | Node 20+, Cloudflare Workers (`nodejs_compat`) |
+
+---
+
 ## File structure
 
 ```
@@ -250,11 +331,9 @@ axion/
 - Loop and Gate are not implemented.
 - Belief DAG, parent/child edges, and root-cause routes are not implemented. The store is a flat timeline.
 - The lens is regex. It misses reasoning that does not use the trigger phrases.
-- SSE is live-only. Disconnects lose events that happened while you were gone.
 - Secret regex is not PII completeness.
 - The inspect window is 200 batches per session and 5000 registry rows.
 - Two providers only: OpenAI Chat Completions and Anthropic Messages.
-- Dashboard this cycle is paste-session plus a read-token field and an error banner. Session picker, live SSE, usage, and export buttons are later work.
 
 ---
 
