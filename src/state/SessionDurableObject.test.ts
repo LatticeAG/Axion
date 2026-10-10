@@ -183,6 +183,47 @@ describe("SessionDurableObject", () => {
     expect(exported.calls).toBe(2);
   });
 
+  it("returns the retained per-batch window at /turns", async () => {
+    const doInstance = new SessionDurableObject(makeState());
+    await doInstance.fetch(
+      post("turns-session", ["old"], {
+        usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 },
+        modelName: "gpt-test",
+        provider: "openai",
+      }),
+    );
+    await doInstance.fetch(post("turns-session", ["new"]));
+
+    const response = await doInstance.fetch(
+      new Request("https://internal/turns?sessionId=turns-session"),
+    );
+    const body = (await response.json()) as {
+      sessionId: string;
+      calls: number;
+      turns: Array<{
+        beliefs: ExtractedBelief[];
+        rawText: string;
+        timestamp: number;
+        usage?: { total_tokens?: number };
+        modelName?: string;
+      }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.sessionId).toBe("turns-session");
+    expect(body.calls).toBe(2);
+    expect(body.turns).toHaveLength(2);
+    expect(body.turns[0]?.beliefs[0]?.id).toBe("old");
+    // Read-time decay matches GET /beliefs: oldest turn loses 10%.
+    expect(body.turns[0]?.beliefs[0]?.confidence).toBeCloseTo(0.7 * 0.9, 8);
+    expect(body.turns[1]?.beliefs[0]?.confidence).toBeCloseTo(0.7, 8);
+    // Per-call metadata survives; rawText never leaves the store.
+    expect(body.turns[0]?.usage?.total_tokens).toBe(5);
+    expect(body.turns[0]?.modelName).toBe("gpt-test");
+    expect(body.turns.every((turn) => turn.rawText === "")).toBe(true);
+    expect(body.turns.every((turn) => turn.beliefs.every((b) => b.rawText === ""))).toBe(true);
+  });
+
   it("persists inboundMessageCount from the extraction result", async () => {
     const doInstance = new SessionDurableObject(makeState());
     await doInstance.fetch(

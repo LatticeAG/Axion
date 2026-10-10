@@ -24,6 +24,7 @@
 import type { Env, ExtractionResult } from "../proxy/types";
 import {
   aggregateBatchUsage,
+  buildTurnWindow,
   flattenBatchActions,
   flattenBeliefBatches,
   resolveSessionId,
@@ -138,6 +139,21 @@ export class SessionDurableObject implements DurableObject {
       return new Response(JSON.stringify({ sessionId, beliefs, actions }), {
         headers: { "Content-Type": "application/json" },
       });
+    }
+
+    // GET /turns - the retained per-batch window: one entry per stored call.
+    // Beliefs decay like GET /beliefs; model-output rawText is omitted.
+    if (url.pathname === "/turns" && request.method === "GET") {
+      const { batches, sessionName } = await this.loadTimeline();
+      const hint = url.searchParams.get("sessionId");
+      return new Response(
+        JSON.stringify({
+          sessionId: resolveSessionId(sessionName, hint),
+          calls: batches.length,
+          turns: buildTurnWindow(batches),
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
     }
 
     // GET /usage - cumulative token totals across all model calls in the

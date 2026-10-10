@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  buildTurnWindow,
   flattenBatchActions,
   flattenBeliefBatches,
   resolveSessionId,
@@ -90,6 +91,62 @@ describe("flattenBeliefBatches", () => {
     expect(flattenBeliefBatches(batches, { decayByTurn: true, includeRawText: true })[0]?.rawText).toBe(
       "secret",
     );
+  });
+});
+
+describe("buildTurnWindow", () => {
+  it("returns one entry per stored batch in storage order", () => {
+    const batches = [batch(["a", "b"], 1), batch(["c"], 2)];
+    const turns = buildTurnWindow(batches);
+    expect(turns).toHaveLength(2);
+    expect(turns.map((turn) => turn.beliefs.map((b) => b.id))).toEqual([
+      ["a", "b"],
+      ["c"],
+    ]);
+    expect(turns[1]?.timestamp).toBe(2);
+  });
+
+  it("decays older turns like the flat timeline and strips rawText", () => {
+    const batches: BeliefBatch[] = [
+      {
+        beliefs: [belief("old", { rawText: "secret", confidence: 0.7 })],
+        rawText: "secret",
+        timestamp: 1,
+      },
+      {
+        beliefs: [belief("new", { rawText: "secret", confidence: 0.7 })],
+        rawText: "secret",
+        timestamp: 2,
+      },
+    ];
+    const turns = buildTurnWindow(batches);
+    expect(turns[0]?.beliefs[0]?.confidence).toBeCloseTo(0.63, 8);
+    expect(turns[1]?.beliefs[0]?.confidence).toBeCloseTo(0.7, 8);
+    expect(turns[0]?.rawText).toBe("");
+    expect(turns[0]?.beliefs[0]?.rawText).toBe("");
+    // Stored batches are not mutated.
+    expect(batches[0]?.beliefs[0]?.confidence).toBe(0.7);
+    expect(batches[0]?.rawText).toBe("secret");
+  });
+
+  it("preserves per-call metadata and tolerates malformed batches", () => {
+    const batches: BeliefBatch[] = [
+      {
+        ...batch(["a"], 1),
+        usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+        modelName: "gpt-test",
+        provider: "openai",
+        inboundMessageCount: 2,
+      },
+      null as unknown as BeliefBatch,
+      { rawText: "x", timestamp: 5 } as unknown as BeliefBatch,
+    ];
+    const turns = buildTurnWindow(batches);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.usage?.total_tokens).toBe(4);
+    expect(turns[0]?.modelName).toBe("gpt-test");
+    expect(turns[0]?.inboundMessageCount).toBe(2);
+    expect(buildTurnWindow(undefined as unknown as BeliefBatch[])).toEqual([]);
   });
 });
 

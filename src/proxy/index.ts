@@ -15,6 +15,7 @@
  *   GET  /api/sessions/:id/export/json     single-session JSON export
  *   GET  /api/sessions/:id/export/markdown single-session Markdown export
  *   GET  /api/sessions/:id/usage           cumulative token usage
+ *   GET  /api/sessions/:id/turns           retained per-batch turn window
  *   GET  /api/sse/:id                      live belief stream
  *   OPTIONS /api/*                         CORS preflight
  *   GET  /                                 302 to /dashboard
@@ -39,6 +40,7 @@ import { fetchAllSessionsExport, fetchSessionExport } from "./export";
 import { fetchHealth, fetchReady } from "./health";
 import { fetchSearch } from "./search";
 import { fetchSessionMetadata, fetchSessions } from "./sessions";
+import { fetchSessionTurns } from "./sessionTurns";
 import { fetchSessionUsage } from "./sessionUsage";
 import { fetchSessionSse } from "./sse";
 import { matchProvider } from "./providers";
@@ -108,6 +110,10 @@ export default {
 
     if (/^\/api\/sessions\/[^/]+\/usage$/.test(pathname) && request.method === "GET") {
       return fetchSessionUsage(request, env, pathname);
+    }
+
+    if (/^\/api\/sessions\/[^/]+\/turns$/.test(pathname) && request.method === "GET") {
+      return fetchSessionTurns(request, env, pathname);
     }
 
     if (/^\/api\/sse\/[^/]+$/.test(pathname) && request.method === "GET") {

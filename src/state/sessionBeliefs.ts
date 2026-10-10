@@ -82,6 +82,34 @@ export function flattenBeliefBatches(
 }
 
 /**
+ * Render the retained per-batch window for GET /turns: one entry per stored
+ * call, in storage order. Beliefs receive the same `0.9 ^ turnsAgo` read-time
+ * decay as the flat timeline, and model-output `rawText` is stripped at both
+ * batch and belief level. Tolerant of malformed batches so a corrupt storage
+ * read can never throw.
+ */
+export function buildTurnWindow(batches: BeliefBatch[]): BeliefBatch[] {
+  if (!Array.isArray(batches)) return [];
+  const lastIndex = batches.length - 1;
+  const out: BeliefBatch[] = [];
+  for (let index = 0; index < batches.length; index++) {
+    const batch = batches[index];
+    if (!batch || typeof batch !== "object" || !Array.isArray(batch.beliefs)) continue;
+    const turnsAgo = lastIndex - index;
+    out.push({
+      ...batch,
+      beliefs: batch.beliefs.map((belief) => ({
+        ...belief,
+        confidence: decayConfidence(belief.confidence, turnsAgo),
+        rawText: "",
+      })),
+      rawText: "",
+    });
+  }
+  return out;
+}
+
+/**
  * Concatenate every batch's `actions` array in storage order. Tolerant of
  * missing or malformed `actions` so a legacy batch can never throw.
  */
